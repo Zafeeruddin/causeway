@@ -1,0 +1,28 @@
+# Preview only. Recording is ffmpeg's job -- MediaMTX republishes for the browser.
+logLevel: info
+
+# Cameras are pulled on demand and dropped when nobody is watching, so a tile
+# nobody has open costs no camera session. Cameras cap concurrent sessions hard.
+sourceOnDemand: yes
+sourceOnDemandStartTimeout: 10s
+sourceOnDemandCloseAfter: 10s
+
+# ssh -L forwards TCP only; UDP RTSP through a tunnel delivers nothing.
+rtspTransports: [tcp]
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsAlwaysRemux: no
+
+rtmp: no
+srt: no
+api: yes
+apiAddress: :9997
+
+# Paths are added at runtime over the API as cameras come and go.
+paths: {}

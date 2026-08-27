@@ -1,0 +1,148 @@
+"""Driver tests are written against real client output, verbatim.
+
+If openfortivpn or openconnect ever change their wording these tests are the
+thing that catches it -- a mis-parsed certificate prompt would otherwise show up
+as a silent, unexplained dial failure.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.enums import VpnKind
+from app.net.vpn.base import AuthFailed, PostureFailed, TrustPromptRequired, VpnConfig
+from app.net.vpn.direct import DirectDriver
+from app.net.vpn.fortinet import FortinetDriver
+from app.net.vpn.globalprotect import GlobalProtectDriver
+from app.net.vpn.registry import driver_for
+from tests.conftest import FakeProcess, FakeRunner
+
+DIGEST = "e0f8c1b0a6d3f4159c2b7d8e0a1f2b3c4d5e6f708192a3b4c5d6e7f80912a3b4"
+
+# Verbatim from openfortivpn 1.21 when the gateway certificate is not pinned.
+FORTI_CERT_OUTPUT = [
+    "INFO:   Connected to gateway.",
+    "ERROR:  Gateway certificate validation failed, and the certificate digest is not in",
+    "ERROR:  the local whitelist. If you trust it, rerun with:",
+    f"ERROR:      --trusted-cert {DIGEST}",
+    "ERROR:  Could not log out.",
+]
+
+FORTI_SUCCESS_OUTPUT = [
+    "INFO:   Connected to gateway.",
+    "INFO:   Authenticated.",
+    "INFO:   Remote gateway has allocated a VPN.",
+    "INFO:   Interface ppp0 is UP.",
+    "INFO:   Tunnel is up and running.",
+]
+
+FORTI_AUTH_FAIL_OUTPUT = [
+    "INFO:   Connected to gateway.",
+    "ERROR:  Could not authenticate to gateway. Please check the password, client certificate, etc.",
+]
+
+# Verbatim from openconnect 9.x against an untrusted GlobalProtect portal.
+GP_CERT_OUTPUT = [
+    'Certificate from VPN server "vpn.example.com" failed verification.',
+    "Reason: signer not found",
+    "To trust this server in future, perhaps add this to your command line:",
+    f"    --servercert sha256:{DIGEST}",
+]
+
+GP_SUCCESS_OUTPUT = [
+    "POST https://vpn.example.com/ssl-vpn/login.esp",
+    "Got legacy IPv4 config",
+    "Connected as 10.44.2.19, using SSL",
+]
+
+
+async def test_fortinet_certificate_prompt_becomes_a_question_not_an_error():
+    runner = FakeRunner(process=FakeProcess(stderr=FORTI_CERT_OUTPUT))
+    driver = FortinetDriver(runner)
+
+    with pytest.raises(TrustPromptRequired) as caught:
+        await driver.dial(VpnConfig(kind=VpnKind.FORTINET, gateway="vpn.example.com"), timeout=5)
+
+    prompt = caught.value
+    assert prompt.fingerprint == DIGEST
+    # The GUI shows SHA-1; openfortivpn pins SHA-256. We must report what we pin.
+    assert prompt.algorithm == "sha256"
+    assert prompt.host == "vpn.example.com"
+    assert DIGEST in prompt.user_message
+
+
+async def test_fortinet_successful_dial(link_show_ppp, addr_show):
+    runner = FakeRunner(
+        process=FakeProcess(stderr=FORTI_SUCCESS_OUTPUT),
+        results={"link show": link_show_ppp, "addr show": addr_show},
+    )
+    driver = FortinetDriver(runner)
+    status = await driver.dial(
+        VpnConfig(kind=VpnKind.FORTINET, gateway="vpn.example.com", username="u", password="p"),
+        timeout=5,
+    )
+    assert status.up
+    assert status.interface == "ppp0"
+    assert status.tunnel_ip == "10.212.134.88"
+
+
+async def test_fortinet_password_goes_over_stdin_never_argv():
+    proc = FakeProcess(stderr=FORTI_AUTH_FAIL_OUTPUT)
+    runner = FakeRunner(process=proc)
+    with pytest.raises(AuthFailed):
+        await FortinetDriver(runner).dial(
+            VpnConfig(kind=VpnKind.FORTINET, gateway="g", username="u", password="hunter2"),
+            timeout=5,
+        )
+    argv = runner.calls[0]
+    assert "hunter2" not in " ".join(argv)
+    assert "--password-on-stdin" in argv
+    assert proc.stdin.written == b"hunter2\n"
+
+
+async def test_fortinet_pins_the_certificate_once_accepted():
+    runner = FakeRunner(process=FakeProcess(stderr=FORTI_SUCCESS_OUTPUT))
+    driver = FortinetDriver(runner)
+    await driver.dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g", trusted_cert=DIGEST), timeout=5)
+    assert f"--trusted-cert={DIGEST}" in runner.calls[0]
+
+
+async def test_fortinet_reports_posture_enforcement_distinctly():
+    """ROADMAP entry 1: this is the symptom that says 'you need a different driver'."""
+    runner = FakeRunner(
+        process=FakeProcess(stderr=["ERROR:  Endpoint compliance check required by gateway."])
+    )
+    with pytest.raises(PostureFailed):
+        await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
+
+
+async def test_globalprotect_certificate_prompt_carries_the_gateway_reason():
+    runner = FakeRunner(process=FakeProcess(stderr=GP_CERT_OUTPUT))
+    with pytest.raises(TrustPromptRequired) as caught:
+        await GlobalProtectDriver(runner).dial(
+            VpnConfig(kind=VpnKind.GLOBALPROTECT, gateway="vpn.example.com"), timeout=5
+        )
+    assert caught.value.fingerprint == DIGEST
+    assert caught.value.reason == "signer not found"
+
+
+async def test_globalprotect_and_paloalto_share_one_protocol_flag():
+    runner = FakeRunner(process=FakeProcess(stderr=GP_SUCCESS_OUTPUT))
+    await GlobalProtectDriver(runner).dial(
+        VpnConfig(kind=VpnKind.GLOBALPROTECT, gateway="g", username="u", password="p"), timeout=5
+    )
+    assert "--protocol=gp" in runner.calls[0]
+
+
+async def test_direct_mode_is_a_driver_not_a_null_check():
+    driver = driver_for(VpnKind.NONE, FakeRunner())
+    assert isinstance(driver, DirectDriver)
+    assert (await driver.dial(VpnConfig(kind=VpnKind.NONE))).up
+    assert (await driver.health()).up
+    await driver.hangup()
+
+
+async def test_a_client_that_dies_without_speaking_is_reported_as_such():
+    runner = FakeRunner(process=FakeProcess(stderr=[]))
+    with pytest.raises(Exception, match="exited without connecting"):
+        await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
