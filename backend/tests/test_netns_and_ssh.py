@@ -91,10 +91,10 @@ async def test_ssh_password_never_reaches_argv():
     """A password in argv is visible in /proc and in any process listing on the
     host. sshpass reads it from the environment instead."""
     runner = FakeRunner(results=dict(NO_MASTER))
-    manager = TunnelManager(control_dir="/tmp/cam-test-ctl", runner=runner)
+    manager = TunnelManager(control_dir="/tmp/cam-test-ctl")
     jump = JumpHost(host="10.0.0.71", username="ops", auth=SshAuth.PASSWORD, password="hunter2")
 
-    await manager.open_master(jump)
+    await manager.open_master(jump, runner)
 
     for call in runner.calls:
         assert "hunter2" not in " ".join(call)
@@ -104,9 +104,9 @@ async def test_ssh_password_never_reaches_argv():
 async def test_forward_failure_is_not_silent():
     """Without ExitOnForwardFailure ssh reports success and forwards nothing."""
     runner = FakeRunner(results=dict(NO_MASTER))
-    manager = TunnelManager(control_dir="/tmp/cam-test-ctl", runner=runner)
+    manager = TunnelManager(control_dir="/tmp/cam-test-ctl")
     jump = JumpHost(host="h", username="ops", auth=SshAuth.KEY, private_key="k")
-    await manager.open_master(jump)
+    await manager.open_master(jump, runner)
 
     master_call = next(c for c in runner.calls if "-fNT" in c)
     assert "ExitOnForwardFailure=yes" in master_call
@@ -120,22 +120,22 @@ async def test_ssh_rejection_says_what_to_do_about_it():
             "-fNT": ProcResult(255, "", "ops@10.0.0.71: Permission denied (publickey,password)."),
         }
     )
-    manager = TunnelManager(control_dir="/tmp/cam-test-ctl", runner=runner)
+    manager = TunnelManager(control_dir="/tmp/cam-test-ctl")
     jump = JumpHost(host="10.0.0.71", username="ops", auth=SshAuth.PASSWORD, password="x")
 
     with pytest.raises(SshAuthFailed) as caught:
-        await manager.open_master(jump)
+        await manager.open_master(jump, runner)
     assert "key authentication" in caught.value.user_message
 
 
 async def test_a_forward_reuses_the_lease_it_already_has():
     """Two probes of one camera must not burn two ports."""
     runner = FakeRunner()
-    manager = TunnelManager(control_dir="/tmp/cam-test-ctl", runner=runner)
+    manager = TunnelManager(control_dir="/tmp/cam-test-ctl")
     jump = JumpHost(host="h", username="ops")
 
-    first = await manager.forward(jump, "src-1", "10.0.0.42", 554)
-    second = await manager.forward(jump, "src-1", "10.0.0.42", 554)
+    first = await manager.forward(jump, runner, "src-1", "10.0.0.42", 554)
+    second = await manager.forward(jump, runner, "src-1", "10.0.0.42", 554)
     assert first.port == second.port
     assert manager.pool.in_use == 1
 
@@ -154,3 +154,69 @@ async def test_releasing_by_owner_frees_the_port():
     await pool.release_owner("src-9")
     assert pool.in_use == 0
     assert (await pool.lease("src-10", "cam:554")).port == lease.port
+
+
+async def test_connecting_a_vpn_profile_hands_ssh_the_profiles_namespace(sessions):
+    """The wiring the ladder's own tests cannot see.
+
+    Production builds exactly one TunnelManager, shared by every profile, so the
+    runner has to arrive with the call. It used to arrive from the manager
+    instead -- a LocalRunner -- and the ssh layer dialled a jump host that is
+    only reachable through the VPN from a namespace that has no VPN in it.
+    """
+    from app.enums import ReachMode, VpnKind
+    from app.models import ConnectionProfile, Team
+    from app.net.netns import Namespace
+    from app.security.secrets import MemoryBackend
+    from app.services.connections import ConnectionService
+    from app.services.events import NullBus
+
+    inside = FakeRunner(default=ProcResult(0, "open\n", ""))
+    seen: dict[str, object] = {}
+
+    class RecordingTunnels(TunnelManager):
+        async def open_master(self, jump, runner, *, timeout=25.0):
+            seen["master"] = runner
+
+    class StubNetns(NetnsManager):
+        async def ensure(self, profile_id: str) -> Namespace:
+            seen["namespace"] = self.ns_name(profile_id)
+            return _FakeNamespace(inside)
+
+    service = ConnectionService(
+        netns=StubNetns(prefix="cam"),
+        tunnels=RecordingTunnels(control_dir="/tmp/cam-test-ctl"),
+        secrets=MemoryBackend(),
+        bus=NullBus(),
+    )
+
+    async with sessions() as db:
+        team = Team(name="ACME", slug="acme")
+        db.add(team)
+        await db.flush()
+        profile = ConnectionProfile(
+            team_id=team.id,
+            name="ACME via the VM",
+            mode=ReachMode.VPN_JUMP,
+            vpn_kind=VpnKind.NONE,
+            jump_host="10.20.30.71",
+            jump_username="ops",
+        )
+        db.add(profile)
+        await db.flush()
+
+        outcome = await service.connect(db, profile)
+
+    assert outcome.ok, outcome.results
+    assert seen["master"] is inside, "ssh ran outside the profile's namespace"
+
+
+class _FakeNamespace:
+    """Stands in for a created namespace without needing CAP_NET_ADMIN."""
+
+    def __init__(self, runner) -> None:
+        self._runner = runner
+
+    @property
+    def runner(self):
+        return self._runner

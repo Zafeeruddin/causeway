@@ -30,6 +30,34 @@ TCP_OPEN = ProcResult(0, "open\n", "")
 TCP_SHUT = ProcResult(1, "closed: ConnectionRefusedError: [Errno 111] Connection refused\n", "")
 
 
+class NamespacedRunner:
+    """A runner bound to a namespace, the way a VPN profile's runner is.
+
+    It records what would *actually* have been executed, ``ip netns exec`` and
+    all. That is the point: the bug this guards against was invisible in the
+    unwrapped argv, because the command was right and only the network it ran in
+    was wrong.
+    """
+
+    name = "netns"
+
+    def __init__(self, namespace: str, inner: FakeRunner) -> None:
+        self.namespace = namespace
+        self.inner = inner
+        self.executed: list[list[str]] = []
+
+    def wrap(self, argv) -> list[str]:
+        return ["ip", "netns", "exec", self.namespace, *argv]
+
+    async def run(self, argv, **kwargs):
+        self.executed.append(self.wrap(argv))
+        return await self.inner.run(argv, **kwargs)
+
+    async def spawn(self, argv, **kwargs):
+        self.executed.append(self.wrap(argv))
+        return await self.inner.spawn(argv, **kwargs)
+
+
 def _source() -> SourceSpec:
     return SourceSpec(
         id="src-1",
@@ -57,7 +85,9 @@ def _ctx(mode: ReachMode, runner: FakeRunner, **kw) -> GateContext:
         profile=profile,
         runner=runner,
         driver=driver_for(profile.vpn.kind, runner),
-        tunnels=TunnelManager(control_dir="/tmp/cam-test-ctl", runner=runner),
+        # No runner on the manager: the ladder hands it the one it is using,
+        # which is the whole point -- see test_the_ssh_layer_runs_where_the_vpn_is.
+        tunnels=TunnelManager(control_dir="/tmp/cam-test-ctl"),
     )
 
 
@@ -217,3 +247,65 @@ async def test_gates_are_emitted_live_as_they_resolve():
         "camera_reachable",
         "stream_handshake",
     ]
+
+
+async def test_the_ssh_layer_runs_inside_the_profiles_namespace(link_show_ppp, addr_show):
+    """Regression, and the shape of the whole bug.
+
+    A jump host behind a VPN is only routable from inside that profile's
+    namespace, and ``ssh -L`` binds 127.0.0.1 in whatever namespace it ran in --
+    which has to be the one ffmpeg dials from. Running the ssh layer on a
+    manager-wide runner satisfied neither, and looked like a credentials
+    problem at gate 5.
+    """
+    inner = FakeRunner(
+        process=FakeProcess(stderr=FORTI_SUCCESS_OUTPUT),
+        results={
+            "link show": link_show_ppp,
+            "addr show": addr_show,
+            "-O check": ProcResult(255, "", "No ControlPath specified"),
+            "ffprobe": FFPROBE_OK,
+        },
+        default=TCP_OPEN,
+    )
+    runner = NamespacedRunner("cam-abc12345", inner)
+    ctx = _ctx(ReachMode.VPN_JUMP, runner)
+    ctx.profile.vpn.trusted_cert = DIGEST
+    ctx.source = _source()
+
+    results = {r.key: r for r in await run_ladder(ctx)}
+
+    assert results["ssh_auth"].status is GateStatus.PASSED
+    assert results["port_forward"].status is GateStatus.PASSED
+
+    ssh_calls = [c for c in runner.executed if "ssh" in c or "sshpass" in c]
+    assert ssh_calls, "the ssh layer never ran on this profile's runner at all"
+    for call in ssh_calls:
+        assert call[:4] == ["ip", "netns", "exec", "cam-abc12345"], call
+
+
+async def test_the_forward_is_bound_by_the_same_runner_ffmpeg_will_use(link_show_ppp, addr_show):
+    """A port bound on one namespace's loopback is not there on another's."""
+    inner = FakeRunner(
+        process=FakeProcess(stderr=FORTI_SUCCESS_OUTPUT),
+        results={
+            "link show": link_show_ppp,
+            "addr show": addr_show,
+            "-O check": ProcResult(255, "", "No ControlPath specified"),
+            "ffprobe": FFPROBE_OK,
+        },
+        default=TCP_OPEN,
+    )
+    runner = NamespacedRunner("cam-abc12345", inner)
+    ctx = _ctx(ReachMode.VPN_JUMP, runner)
+    ctx.profile.vpn.trusted_cert = DIGEST
+    ctx.source = _source()
+
+    await run_ladder(ctx)
+
+    forward = next(c for c in runner.executed if "-O" in c and "forward" in c)
+    assert forward[:4] == ["ip", "netns", "exec", "cam-abc12345"]
+    # And the stream probe that follows dials the port that forward just bound.
+    assert ctx.local_port is not None
+    probe = next(c for c in runner.executed if "ffprobe" in c)
+    assert f"127.0.0.1:{ctx.local_port}" in " ".join(probe)

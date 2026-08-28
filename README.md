@@ -75,7 +75,10 @@ reach the rest of the system:
   Vault is a second implementation plus a migration script. ROADMAP entry 3.
 - **`Runner`** (`app/net/runner.py`) — decides whether a command runs plainly or
   inside a VPN's network namespace. Every network-touching component takes one,
-  which is also why the whole stack can be tested without a network.
+  and the ssh layer takes it *per call* rather than holding one, because a
+  single `TunnelManager` serves profiles in different namespaces. There is no
+  default: a missing runner is a signature error, not a silent misconfiguration.
+  This is also why the whole stack can be tested without a network.
 - **`SourcePath`** (`app/recorder/session.py`) — four methods: open the path,
   say which hop died, close it. The recorder has no reconnection logic of its
   own; it reopens the path and starts the next run. A scheduled recording or a
@@ -97,6 +100,15 @@ reach the rest of the system:
   instead of failing. That ordering is the kill-switch.
 - **`ExitOnForwardFailure=yes` is not optional.** Without it ssh reports success
   and forwards nothing.
+- **The ssh layer must run in the profile's own namespace, master and forwards
+  alike.** A jump host behind a VPN is only routable from inside it, and
+  `ssh -L` binds `127.0.0.1` in whatever namespace ssh ran in — which has to be
+  the one ffmpeg dials from, or the port is bound on a loopback nobody is
+  listening to. Both failures are quiet: the second one gives you a green gate
+  ladder and a tunnel that carries nothing.
+- **One SSH master per jump host *per namespace*.** Two profiles can name the
+  same jump host and reach it by different paths; sharing a master would send
+  one profile's forwards down the other's tunnel and look like it worked.
 - **Versity is path-style.** Virtual-host addressing resolves
   `cam-recordings.s3.example.com`, which does not exist, and fails like an outage.
 - **Versity has no lifecycle rules and no bucket quotas.** The retention sweep

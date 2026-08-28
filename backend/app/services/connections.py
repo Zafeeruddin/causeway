@@ -30,7 +30,7 @@ from app.gates.ladder import (
 )
 from app.models import Camera, CameraSource, ConnectionProfile, GateRun
 from app.net.netns import NetnsManager, NetnsUnavailable
-from app.net.runner import LocalRunner, Runner
+from app.net.runner import LocalRunner, NetnsRunner, Runner
 from app.net.ssh import JumpHost, TunnelManager
 from app.net.vpn.base import VpnConfig, VpnDriver
 from app.net.vpn.registry import driver_for
@@ -245,13 +245,29 @@ class ConnectionService:
         if profile.reach_mode.has_jump:
             spec = await self.build_spec(profile)
             if spec.jump is not None:
-                await self.tunnels.close_master(spec.jump)
+                # The master lives in this profile's namespace, so it has to be
+                # closed from there -- and before the namespace goes away.
+                await self.tunnels.close_master(spec.jump, self._known_runner(profile))
         self._runners.pop(profile.id, None)
         if profile.reach_mode.has_vpn:
             await self.netns.destroy(profile.id)
         profile.tunnel_ip = None
         profile.namespace = None
         await self._set_state(db, profile, ProfileState.IDLE, "disconnected")
+
+    def _known_runner(self, profile: ConnectionProfile) -> Runner:
+        """The runner this profile was connected with, without creating anything.
+
+        ``runner_for`` would build the namespace back to tear it down. If the
+        namespace is already gone the ssh call simply fails, which is the right
+        outcome for a connection that is not there any more.
+        """
+        cached = self._runners.get(profile.id)
+        if cached is not None:
+            return cached
+        if profile.reach_mode.has_vpn:
+            return NetnsRunner(self.netns.ns_name(profile.id))
+        return LocalRunner()
 
     @property
     def live_profile_ids(self) -> set[str]:
