@@ -99,8 +99,10 @@ class ProfileSourcePath:
             if profile.reach_mode.has_jump:
                 jump = (await self._connections.build_spec(profile)).jump
                 assert jump is not None
+                # Same runner ffmpeg will use: the forward binds 127.0.0.1 in
+                # that namespace, and a port bound in another one is not there.
                 lease = await self._connections.tunnels.forward(
-                    jump, source.id, source.host, source.port
+                    jump, runner, source.id, source.host, source.port
                 )
                 url = url.with_host("127.0.0.1", lease.port)
             return OpenPath(url=url, runner=runner, detail=f"via {profile.name}")
@@ -122,16 +124,16 @@ class ProfileSourcePath:
             if profile.reach_mode.has_vpn and not await self._connections.health(profile):
                 return "vpn", f"the VPN tunnel for {profile.name} is down"
 
-            if profile.reach_mode.has_jump:
-                jump = (await self._connections.build_spec(profile)).jump
-                assert jump is not None
-                if not await self._connections.tunnels.master_alive(jump):
-                    return "ssh", f"the SSH connection to {jump.host} dropped"
-
             try:
                 runner = await self._connections.runner_for(profile)
             except Exception as exc:  # noqa: BLE001 - no namespace means no path
                 return "vpn", f"the connection's namespace is gone: {exc}"
+
+            if profile.reach_mode.has_jump:
+                jump = (await self._connections.build_spec(profile)).jump
+                assert jump is not None
+                if not await self._connections.tunnels.master_alive(jump, runner):
+                    return "ssh", f"the SSH connection to {jump.host} dropped"
 
             lease = self._connections.tunnels.pool.get(source.id)
             host, port = ("127.0.0.1", lease.port) if lease else (source.host, source.port)

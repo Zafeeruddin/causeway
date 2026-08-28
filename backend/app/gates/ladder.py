@@ -292,7 +292,7 @@ class SshAuthGate(Gate):
         jump = ctx.profile.jump
         assert jump is not None
         try:
-            await ctx.tunnels.open_master(jump)
+            await ctx.tunnels.open_master(jump, ctx.runner)
         except SshError as exc:
             return self.failed(exc.user_message, detail_text=str(exc)[:300])
         return self.passed(f"connected as {jump.username} using {jump.auth} authentication")
@@ -314,7 +314,7 @@ class PortForwardGate(Gate):
         jump, source = ctx.profile.jump, ctx.source
         assert jump is not None and source is not None
         try:
-            lease = await ctx.tunnels.forward(jump, source.id, source.host, source.port)
+            lease = await ctx.tunnels.forward(jump, ctx.runner, source.id, source.host, source.port)
         except SshError as exc:
             return self.failed(exc.user_message, detail_text=str(exc)[:300])
         ctx.local_port = lease.port
