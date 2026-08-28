@@ -30,7 +30,7 @@ Phase 1, in progress. What exists and is tested:
 | Retention sweep and admission accounting | done |
 | Dashboard frontend | done |
 | Connect dispatched from the API to the agent | done |
-| RTSP + HLS side-by-side compare view | next — ROADMAP entry 4 |
+| RTSP + HLS side-by-side compare view | done |
 
 ## Getting started
 
@@ -117,6 +117,13 @@ reach the rest of the system:
   recorded as a gap; it does not extend the session. Extending it would hand
   back footage of a different five minutes and double the storage the admission
   check was sized against.
+- **The compare view's transport is wall clock too, and that is not cosmetic.**
+  A session file is a concatenation of what was captured, so after a fifteen
+  second outage everything sits fifteen seconds earlier in the file than it
+  happened in the world. Seeking both players to the same media position
+  compares frames minutes apart and looks exactly like the inference being
+  wrong. `app/services/playback.py` maps a moment to each feed's own position;
+  `frontend/src/lib/playback.ts` mirrors it.
 - **Network namespaces cannot be shared between containers.** The agent is the
   only process that can dial, forward or record, which is why it is the only one
   with `NET_ADMIN`, and why `CONNECT_MODE=agent` sends the API's connect,

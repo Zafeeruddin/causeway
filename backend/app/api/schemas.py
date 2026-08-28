@@ -310,6 +310,65 @@ class DownloadLink(BaseModel):
     expires_in: int
 
 
+# ---- comparison --------------------------------------------------------
+
+
+class SpanOut(BaseModel):
+    """A stretch of video with no discontinuity, placed on both clocks."""
+
+    media_start: float
+    wall_start: float
+    seconds: float
+
+
+class GapMarkOut(BaseModel):
+    wall_start: float
+    seconds: float
+    cause: str
+    detail: str = ""
+
+
+class TrackOut(BaseModel):
+    source_kind: SourceKind
+    url: str
+    expires_in: int
+    bytes: int
+    captured_seconds: float
+    gap_seconds: float
+    #: Where this feed starts on the shared clock. Rarely zero for both: the two
+    #: ffmpegs are started together but do not connect together.
+    starts_at: float
+    spans: list[SpanOut]
+    gaps: list[GapMarkOut]
+
+
+class AlignmentOut(BaseModel):
+    """What the shared transport can and cannot promise.
+
+    Stated rather than implied, because the whole point of the view is judging
+    one feed against the other and a silent alignment error looks exactly like
+    the inference being wrong.
+    """
+
+    method: Literal["wall_clock"] = "wall_clock"
+    accuracy_seconds: float
+    note: str
+
+
+class ComparisonOut(BaseModel):
+    recording_id: str
+    camera_id: str
+    camera_name: str
+    state: RecordingState
+    requested_seconds: int
+    #: The moment the earlier of the two feeds started. Everything else in this
+    #: response is seconds from here.
+    origin: datetime
+    window_seconds: float
+    tracks: list[TrackOut]
+    alignment: AlignmentOut
+
+
 # ---- storage -----------------------------------------------------------
 
 

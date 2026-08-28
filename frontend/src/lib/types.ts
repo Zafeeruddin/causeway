@@ -62,6 +62,30 @@ export interface Recording {
   captured_seconds: number; gap_seconds: number; total_bytes: number; failure_reason: string;
 }
 
+/** A stretch of video with no discontinuity, placed on both clocks. */
+export interface Span { media_start: number; wall_start: number; seconds: number }
+
+export interface GapMark { wall_start: number; seconds: number; cause: string; detail: string }
+
+export interface Track {
+  source_kind: SourceKind;
+  url: string; expires_in: number; bytes: number;
+  captured_seconds: number; gap_seconds: number; starts_at: number;
+  spans: Span[]; gaps: GapMark[];
+}
+
+export interface Alignment { method: "wall_clock"; accuracy_seconds: number; note: string }
+
+export interface Comparison {
+  recording_id: string; camera_id: string; camera_name: string;
+  state: RecordingState; requested_seconds: number;
+  /** Everything else in here is seconds from this moment. */
+  origin: string;
+  window_seconds: number;
+  tracks: Track[];
+  alignment: Alignment;
+}
+
 export interface DownloadLink {
   /** null for gaps.json, which describes the session rather than one source. */
   source_kind: SourceKind | null; filename: string; bytes: number; url: string; expires_in: number;

@@ -6,6 +6,9 @@ __pycache__/
 .ruff_cache/
 node_modules/
 .next/
-data/
-recordings/
+# Anchored to the repo root on purpose. Unanchored, `recordings/` also matched
+# frontend/src/app/(dash)/recordings/ and silently kept the whole route out of
+# git; these two are runtime directories at the top level, nothing else.
+/data/
+/recordings/
 *.sock

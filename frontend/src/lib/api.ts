@@ -7,7 +7,7 @@
  */
 
 import type {
-  Admission, Camera, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
+  Admission, Camera, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
   Profile, Recording, ReachMode, SourceKind, SshAuth, StorageUsage, Team, User, VpnKind,
 } from "./types";
 
@@ -114,6 +114,7 @@ export const api = {
   estimate: (camera_ids: string[], seconds: number) =>
     request<Admission>("/api/recordings/estimate", { method: "POST", ...json({ camera_ids, seconds }) }),
   downloads: (id: string) => request<DownloadLink[]>(`/api/recordings/${id}/downloads`),
+  comparison: (id: string) => request<Comparison>(`/api/recordings/${id}/comparison`),
 
   // storage + admin
   storage: () => request<StorageUsage>("/api/storage/usage"),
