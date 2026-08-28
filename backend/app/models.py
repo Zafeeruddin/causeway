@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -38,6 +39,10 @@ from app.enums import (
     SshAuth,
     VpnKind,
 )
+
+#: JSONB on Postgres, plain JSON everywhere else -- so the suite can run against
+#: SQLite without a second schema definition.
+JsonColumn = JSON().with_variant(JSONB(), "postgresql")
 
 
 def _uuid() -> str:
@@ -169,7 +174,7 @@ class GateRun(Base):
     gate_index: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[GateStatus] = mapped_column(String(16), nullable=False)
     message: Mapped[str] = mapped_column(Text, default="")
-    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    detail: Mapped[dict] = mapped_column(JsonColumn, default=dict)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -335,7 +340,10 @@ class StorageObject(Base, TimestampMixin):
     recording_id: Mapped[str] = mapped_column(
         ForeignKey("recordings.id", ondelete="CASCADE"), index=True
     )
-    source_kind: Mapped[SourceKind] = mapped_column(String(8), nullable=False)
+    #: Null for objects that describe the session rather than one source --
+    #: gaps.json. They are rows like any other so that retention sweeps them
+    #: too; nothing on the gateway expires anything we forget about.
+    source_kind: Mapped[SourceKind | None] = mapped_column(String(8))
     s3_key: Mapped[str] = mapped_column(String(700), nullable=False, unique=True)
     content_type: Mapped[str] = mapped_column(String(80), default="video/mp4")
     bytes: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -359,7 +367,7 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     subject_type: Mapped[str] = mapped_column(String(48), default="")
     subject_id: Mapped[str | None] = mapped_column(String(36))
-    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    detail: Mapped[dict] = mapped_column(JsonColumn, default=dict)
     source_ip: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

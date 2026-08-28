@@ -1,0 +1,92 @@
+/** Mirrors app/api/schemas.py. Kept hand-written and small rather than generated. */
+
+export type Role = "admin" | "member";
+export type ReachMode = "direct" | "vpn_only" | "jump_only" | "vpn_jump";
+export type VpnKind = "none" | "fortinet" | "globalprotect" | "wireguard";
+export type SshAuth = "password" | "key";
+export type SourceKind = "rtsp" | "hls";
+export type ProfileState =
+  | "idle" | "connecting" | "needs_interaction" | "up" | "degraded" | "failed";
+export type GateStatus =
+  | "pending" | "running" | "passed" | "skipped" | "failed" | "blocked";
+export type RecordingState =
+  | "queued" | "recording" | "recovering" | "finalizing" | "complete" | "failed" | "cancelled";
+
+export interface Team { id: string; name: string; slug: string; description?: string; member_count?: number }
+export interface Me { id: string; email: string; display_name: string; role: Role; teams: Team[] }
+
+export interface Profile {
+  id: string; team_id: string; name: string; mode: ReachMode;
+  state: ProfileState; state_detail: string;
+  vpn_kind: VpnKind; vpn_gateway: string; vpn_port: number; vpn_username: string;
+  has_vpn_password: boolean;
+  jump_host: string; jump_port: number; jump_username: string; jump_auth: SshAuth;
+  has_jump_credentials: boolean;
+  whitelist_url: string | null;
+  trusted_cert: string | null; trusted_cert_algorithm: string; trusted_cert_accepted_at: string | null;
+  tunnel_ip: string | null; last_connected_at: string | null;
+}
+
+export interface Gate {
+  key: string; index: number; title: string; status: GateStatus;
+  message: string; detail: Record<string, unknown>; duration_ms: number;
+}
+
+export interface ConnectResponse {
+  attempt_id: string; state: ProfileState; gates: Gate[];
+  action_required: Record<string, unknown> | null;
+}
+
+export interface Source {
+  id: string; kind: SourceKind; url: string; host: string; port: number; username: string;
+  uses_profile_path: boolean;
+  last_probe_at: string | null; last_probe_ok: boolean | null; last_probe_detail: string;
+  codec: string | null; width: number | null; height: number | null; fps: number | null;
+}
+
+export interface Camera {
+  id: string; team_id: string; profile_id: string; name: string;
+  location: string; is_enabled: boolean; sources: Source[];
+}
+
+export interface ImportIssue { line: number; value: string; reason: string }
+export interface ImportResult {
+  summary: string; created: number; dry_run: boolean;
+  cameras: { name: string; location: string; sources: { kind: SourceKind; url: string }[] }[];
+  duplicates: ImportIssue[]; rejected: ImportIssue[];
+}
+
+export interface Recording {
+  id: string; team_id: string; camera_id: string; state: RecordingState;
+  requested_seconds: number; started_at: string | null; finished_at: string | null;
+  captured_seconds: number; gap_seconds: number; total_bytes: number; failure_reason: string;
+}
+
+export interface DownloadLink {
+  /** null for gaps.json, which describes the session rather than one source. */
+  source_kind: SourceKind | null; filename: string; bytes: number; url: string; expires_in: number;
+}
+
+export interface StorageUsage {
+  used_bytes: number; warn_bytes: number; gc_bytes: number; hard_bytes: number;
+  state: "ok" | "warning" | "collecting" | "full";
+  message: string; by_team: Record<string, number>;
+}
+
+export interface Admission {
+  allowed: boolean; reason: string; estimated_bytes: number; headroom_bytes: number;
+}
+
+export interface User {
+  id: string; email: string; display_name: string; role: Role;
+  is_active: boolean; last_login_at: string | null;
+}
+
+/** Envelope pushed over the WebSocket. */
+export interface LiveEvent {
+  type: "gate" | "profile_state" | "recording" | "ready" | "ping";
+  team_id?: string;
+  at?: string;
+  payload?: Record<string, any>;
+  teams?: string[];
+}

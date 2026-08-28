@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: "Public Sans", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+  html { color-scheme: dark; }
+  body {
+    @apply bg-ink text-fg antialiased;
+    font-family: var(--font-sans);
+  }
+  /* Digits that line up in columns should stay lined up. */
+  .tnum { font-variant-numeric: tabular-nums; }
+  :focus-visible { @apply outline-none ring-2 ring-steel ring-offset-2 ring-offset-ink; }
+}

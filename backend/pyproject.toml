@@ -21,6 +21,9 @@ dependencies = [
     "structlog>=24.4",
 ]
 
+[project.scripts]
+cam = "app.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
@@ -49,6 +52,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Client output is quoted verbatim; reflowing it would stop it matching reality.
 "tests/test_vpn_drivers.py" = ["E501"]
+# The scripted ffmpeg writes the files a real one would have written. Pushing
+# those two-line stubs onto a worker thread would obscure what they stand in for.
+"tests/test_recorder.py" = ["ASYNC240"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

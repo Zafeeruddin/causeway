@@ -1,0 +1,111 @@
+"""The agent's side of the command bus.
+
+Each handler is the same call the API used to make in its own process, run in
+the process that can actually make it. Nothing new happens here -- that is the
+point of the split: the connect flow, the gate ladder and the certificate pin
+are one implementation, reached from two places.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import Camera, CameraSource, ConnectionProfile
+from app.services.connections import ConnectionService
+from app.services.gateway import outcome_payload
+
+log = structlog.get_logger(__name__)
+
+
+class UnknownCommand(RuntimeError):
+    def __init__(self, name: str) -> None:
+        self.user_message = f"the agent does not know the command {name!r}"
+        super().__init__(self.user_message)
+
+
+class Missing(RuntimeError):
+    """The row the command names is gone. Says so in the words the person who
+    pressed the button will read."""
+
+    def __init__(self, what: str) -> None:
+        self.user_message = f"that {what} no longer exists"
+        super().__init__(self.user_message)
+
+
+class ConnectionCommands:
+    def __init__(
+        self,
+        *,
+        connections: ConnectionService,
+        sessions: async_sessionmaker[AsyncSession],
+        status: Callable[[], dict[str, Any]] | None = None,
+    ) -> None:
+        self.connections = connections
+        self._sessions = sessions
+        self._status = status or (lambda: {})
+
+    async def handle(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "agent.ping":
+            return {"up": True, **self._status()}
+        handlers = {
+            "profile.connect": self._connect,
+            "profile.disconnect": self._disconnect,
+            "profile.trust": self._trust,
+            "camera.test_source": self._test_source,
+        }
+        handler = handlers.get(name)
+        if handler is None:
+            raise UnknownCommand(name)
+        return await handler(payload)
+
+    # ---- handlers ------------------------------------------------------
+
+    async def _connect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._sessions() as db:
+            profile = await self._profile(db, payload)
+            outcome = await self.connections.connect(db, profile)
+            await db.commit()
+            return outcome_payload(outcome)
+
+    async def _disconnect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._sessions() as db:
+            profile = await self._profile(db, payload)
+            await self.connections.disconnect(db, profile)
+            await db.commit()
+            return {}
+
+    async def _trust(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Pin the certificate and commit it here.
+
+        The dial that reads the pin happens in a separate command, so the write
+        has to be visible before that command starts -- which it cannot be if it
+        is still inside the API request's open transaction.
+        """
+        async with self._sessions() as db:
+            profile = await self._profile(db, payload)
+            await self.connections.accept_certificate(
+                db, profile, payload["fingerprint"], payload.get("user_id", "")
+            )
+            await db.commit()
+            return {}
+
+    async def _test_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._sessions() as db:
+            profile = await self._profile(db, payload)
+            camera = await db.get(Camera, payload["camera_id"])
+            source = await db.get(CameraSource, payload["source_id"])
+            if camera is None or source is None:
+                raise Missing("camera")
+            outcome = await self.connections.test_source(db, profile, camera, source)
+            await db.commit()
+            return outcome_payload(outcome)
+
+    async def _profile(self, db: AsyncSession, payload: dict[str, Any]) -> ConnectionProfile:
+        profile = await db.get(ConnectionProfile, payload["profile_id"])
+        if profile is None:
+            raise Missing("connection profile")
+        return profile
