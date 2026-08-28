@@ -8,6 +8,8 @@ mid-write costs a truncated file and overshoots anyway.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,22 +19,33 @@ from app.api.auth import current_principal
 from app.api.deps import load_recording
 from app.api.schemas import (
     AdmissionOut,
+    AlignmentOut,
+    ComparisonOut,
     DownloadLink,
+    GapMarkOut,
     RecordingCreate,
     RecordingOut,
+    SpanOut,
     StorageUsage,
+    TrackOut,
 )
 from app.config import settings
 from app.db import Principal, get_session, scoped_select
 from app.enums import RecordingState, SourceKind
-from app.models import Camera, Recording, StorageObject
+from app.models import Camera, Gap, Recording, Segment, StorageObject
 from app.services.audit import record as audit
+from app.services.playback import build_spans, gap_marks, origin_of, window_seconds
 from app.storage.client import StorageError, object_store
 from app.storage.retention import StoragePolicy, admit, estimate_bytes, usage_state
 
 router = APIRouter(prefix="/api", tags=["recordings"])
 
 DOWNLOAD_TTL = 3600
+
+#: How closely the two feeds can honestly be lined up. The spans are exact, but
+#: a span starts when ffmpeg started, not when the first frame arrived, and RTSP
+#: and HLS do not buffer alike. Quoted to the user rather than hidden.
+ALIGNMENT_ACCURACY = 2.0
 
 
 @router.get("/recordings", response_model=list[RecordingOut])
@@ -201,6 +214,107 @@ async def downloads(
         team_id=recording.team_id,
     )
     return links
+
+
+@router.get("/recordings/{recording_id}/comparison", response_model=ComparisonOut)
+async def comparison(
+    recording: Recording = Depends(load_recording),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> ComparisonOut:
+    """Everything the side-by-side view needs, in one request.
+
+    Both feeds, their gaps, and the timeline that maps a moment to a position in
+    each file. The mapping is the part that matters: the session file is a
+    concatenation of what was captured, so after an outage the two feeds sit at
+    different media times for the same moment and seeking both to the same
+    number silently compares the wrong frames.
+    """
+    rows = await db.execute(
+        select(StorageObject).where(
+            StorageObject.recording_id == recording.id,
+            StorageObject.deleted_at.is_(None),
+            StorageObject.source_kind.is_not(None),
+        )
+    )
+    objects = list(rows.scalars().all())
+    if not objects:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This recording has nothing to play yet."
+            if recording.state != RecordingState.COMPLETE
+            else "The files for this recording are gone - it may have been cleared by retention.",
+        )
+
+    segments = list(
+        (await db.execute(select(Segment).where(Segment.recording_id == recording.id)))
+        .scalars()
+        .all()
+    )
+    origin = origin_of(segments)
+    if origin is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This recording captured nothing that can be played."
+        )
+
+    gaps = list(
+        (await db.execute(select(Gap).where(Gap.recording_id == recording.id))).scalars().all()
+    )
+    camera = await db.get(Camera, recording.camera_id)
+    store = object_store()
+
+    spans_by_kind = {
+        kind: build_spans([s for s in segments if s.source_kind == kind], origin)
+        for kind in {SourceKind(s.source_kind) for s in segments}
+    }
+    window = window_seconds(list(spans_by_kind.values()))
+
+    # Raw feed first: the comparison reads left to right, camera then inference.
+    order = {SourceKind.RTSP: 0, SourceKind.HLS: 1}
+    playable = [(SourceKind(obj.source_kind), obj) for obj in objects if obj.source_kind]
+    tracks: list[TrackOut] = []
+    for kind, obj in sorted(playable, key=lambda pair: order.get(pair[0], 9)):
+        spans = spans_by_kind.get(kind, [])
+        try:
+            # No attachment disposition here: these URLs go into a <video>, and
+            # the download button is the other endpoint.
+            url = await store.presign(obj.s3_key, expires=DOWNLOAD_TTL)
+        except StorageError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, exc.user_message) from exc
+        marks = gap_marks([g for g in gaps if g.source_kind == kind], origin, window=window)
+        tracks.append(
+            TrackOut(
+                source_kind=kind,
+                url=url,
+                expires_in=DOWNLOAD_TTL,
+                bytes=obj.bytes,
+                captured_seconds=round(sum(span.seconds for span in spans), 3),
+                gap_seconds=round(sum(mark.seconds for mark in marks), 3),
+                starts_at=spans[0].wall_start if spans else 0.0,
+                spans=[SpanOut(**asdict(span)) for span in spans],
+                gaps=[GapMarkOut(**asdict(mark)) for mark in marks],
+            )
+        )
+
+    return ComparisonOut(
+        recording_id=recording.id,
+        camera_id=recording.camera_id,
+        camera_name=camera.name if camera else "",
+        state=RecordingState(recording.state),
+        requested_seconds=recording.requested_seconds,
+        origin=origin,
+        window_seconds=window,
+        tracks=tracks,
+        alignment=AlignmentOut(
+            accuracy_seconds=ALIGNMENT_ACCURACY,
+            note=(
+                "Aligned by wall clock, to about "
+                f"{ALIGNMENT_ACCURACY:.0f} seconds. Each feed's own outages are "
+                "accounted for. What is not: the delay the inference pipeline adds "
+                "before it publishes a segment. Use the trim control to take that out."
+            ),
+        ),
+    )
 
 
 @router.get("/storage/usage", response_model=StorageUsage)

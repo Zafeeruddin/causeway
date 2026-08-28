@@ -187,7 +187,9 @@ the point of logging. If that holds, swapping backends is a weekend, not a proje
 
 ## 4. RTSP + HLS side-by-side comparison for QA
 
-**Status:** `NEXT` — the reason the dual-source model exists
+**Status:** `DONE` — 28 Aug 2026. `app/services/playback.py` and
+`GET /api/recordings/{id}/comparison`; the view is
+`frontend/src/app/(dash)/recordings/[id]/page.tsx`.
 
 ### Context
 
@@ -217,13 +219,31 @@ already fans out to every source of a camera concurrently, one ffmpeg each, into
 carries its own reachability (`camera_sources.uses_profile_path`). What is left is the
 compare UI and the shared scrubber.
 
-### Known problem to solve when we build it
+### The alignment question, and what we did about it
 
-Frame-accurate alignment. HLS segment boundaries and RTSP timestamps will not line up, and
-the inference pipeline adds its own latency. Decide early whether QA needs true frame
-alignment (expensive — requires a common timestamp source, probably burned-in or embedded
-via RTCP sender reports) or whether "within a second or two, labelled" is enough. Ask QA
-before building; do not assume the expensive answer.
+This entry said to ask QA whether they need true frame alignment before building, and not to
+assume the expensive answer. **We could not ask, so we built the cheap answer and labelled
+it.** If QA comes back needing frame accuracy, the expensive path is still open and nothing
+here blocks it — it needs a common timestamp source (burned-in, or embedded via RTCP sender
+reports), which is a change to what we record, not to how we play it back.
+
+What shipped instead:
+
+- Alignment is by wall clock, quoted to the user as **about two seconds** on the view itself.
+  The spans are exact; what is not exact is that a span begins when ffmpeg started, not when
+  the first frame landed, and RTSP and HLS do not buffer alike.
+- The inference pipeline's own latency is unknowable to us, so it is a **manual trim** on the
+  inferred feed, in tenths of a second, with the reason written next to it. QA nudges it once
+  and it holds for the session.
+
+The harder half turned out not to be latency at all. A session file is a *concatenation* of
+what was captured, so a fifteen second outage is not fifteen seconds of black — it is absent,
+and everything after it sits fifteen seconds earlier in the file than it happened in the
+world. Two feeds that dropped at different times drift apart by exactly the outages they did
+not share, and seeking both to the same media position compares frames minutes apart while
+looking perfectly plausible. So the transport runs on wall-clock time and each feed converts
+a moment into its own position through its own spans. A feed that missed the moment shows why
+it missed it — the gap's cause — rather than showing something else.
 
 ---
 
