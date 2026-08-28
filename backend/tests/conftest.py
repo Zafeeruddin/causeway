@@ -23,6 +23,7 @@ from app.net.ssh import TunnelManager
 from app.security.secrets import MemoryBackend, set_secrets_backend
 from app.services.connections import ConnectionService
 from app.services.events import NullBus, set_event_bus
+from app.services.preview import PreviewManager
 
 
 def reader_for(lines: list[str]) -> asyncio.StreamReader:
@@ -100,6 +101,37 @@ class FakeRunner:
         return self.process
 
 
+class FakeMediaMtx:
+    """MediaMTX without the container. Paths are a dict; readiness is scripted."""
+
+    def __init__(self, *, ready: bool = True) -> None:
+        self.paths: dict[str, int] = {}
+        self.ready = ready
+        self.removed: list[str] = []
+
+    async def add_path(self, name: str) -> None:
+        self.paths[name] = 0
+
+    async def remove_path(self, name: str) -> None:
+        self.paths.pop(name, None)
+        self.removed.append(name)
+
+    async def state(self, name: str):
+        from app.services.mediamtx import PathState
+
+        if name not in self.paths:
+            return None
+        return PathState(name=name, ready=self.ready, readers=self.paths[name])
+
+    async def states(self) -> dict:
+        from app.services.mediamtx import PathState
+
+        return {
+            name: PathState(name=name, ready=self.ready, readers=readers)
+            for name, readers in self.paths.items()
+        }
+
+
 @pytest.fixture
 def link_show_ppp() -> ProcResult:
     """`ip -o link show` with a pppd tunnel present."""
@@ -170,6 +202,13 @@ async def app(sessions, bus):
         tunnels=application.state.tunnels,
         secrets=MemoryBackend(),
         bus=bus,
+    )
+    # No reaper task and no real MediaMTX: tests that exercise preview supply
+    # their own manager, and the rest must not reach a network for it.
+    application.state.previews = PreviewManager(
+        connections=application.state.gateway,
+        sessions=sessions,
+        mediamtx=FakeMediaMtx(),
     )
     return application
 

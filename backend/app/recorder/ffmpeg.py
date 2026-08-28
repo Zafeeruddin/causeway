@@ -110,6 +110,40 @@ def capture_argv(
     return argv
 
 
+def publish_argv(url: StreamUrl, kind: SourceKind, target: str) -> list[str]:
+    """Republish a live source to MediaMTX, without re-encoding.
+
+    This runs *inside* the profile's namespace, because that is the only place
+    the camera exists -- and it reaches MediaMTX back out over the namespace's
+    control route, which is the one thing that route is for. ``target`` must
+    therefore be an address, never a name: Docker's resolver lives on the
+    container's own loopback and is not visible from inside a namespace, so a
+    hostname here fails to resolve in a way that looks like the camera is down.
+
+    Copying rather than transcoding keeps a preview close to free; a browser
+    that cannot play the camera's codec is a real possibility, and the honest
+    answer to that is a message rather than fifteen silent transcodes.
+    """
+    argv = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning"]
+    if kind is SourceKind.RTSP:
+        argv += ["-rtsp_transport", "tcp"]
+    argv += [
+        "-fflags",
+        "+genpts",
+        "-i",
+        url.expose(),
+        "-c",
+        "copy",
+        "-f",
+        "rtsp",
+        # The push leg is pinned to TCP for the same reason the pull leg is.
+        "-rtsp_transport",
+        "tcp",
+        target,
+    ]
+    return argv
+
+
 def concat_argv(list_file: Path | str, output: Path | str) -> list[str]:
     """Join sealed segments into one MP4 without re-encoding video."""
     return [

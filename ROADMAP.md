@@ -453,3 +453,78 @@ Two details worth keeping:
   mode, so "VPN profiles cannot work here" is visible before someone presses connect.
 - Nothing in the recorder changed. `SourcePath.open` already reconnects through
   `ConnectionService` inside the agent, which owns it either way.
+
+---
+
+## 12. Authentication on the preview server
+
+**Status:** `PLANNED` — path names are unguessable, which is not the same as access control
+
+### Context
+
+MediaMTX runs with no authentication configured, so every action it offers is anonymous.
+Anyone who can reach port 8889 on the LAN and knows a path name can watch that stream. The
+API on 9997 is anonymous too and is only out of reach because compose does not publish it —
+one added port mapping and anyone can add, list or delete paths outright.
+
+What stands between a stream and a stranger today is the path name. `app/services/preview.py`
+names paths `preview/<16 random characters>` rather than by camera id, and deletes the path
+when the publisher stops, so a name is neither guessable nor useful for long. But the name
+travels in the WHEP URL the dashboard hands the browser, and a name that leaks — a shared
+screenshot, a proxy log, devtools — is a stream anyone can open until the reaper takes it.
+The dashboard itself is behind session auth and team scoping; the preview server is not
+behind anything.
+
+### Trigger
+
+The first of: the preview port becoming reachable from anything wider than the office LAN,
+a second team on the same deployment (unguessable is a weak answer to "can team A watch team
+B's cameras"), or an audit asking who watched what — MediaMTX cannot answer that today
+because it never learns who anyone is.
+
+### How we'd implement it
+
+MediaMTX has three `authMethod` values, and only one of them knows about our users:
+
+- `internal` — a user list in `mediamtx.yml`, with per-action (`publish`, `read`, `api`)
+  and per-path permissions. Cheapest, and worth doing on its own even if we go further:
+  a `publish`-only user for the agent, an `api`-only user for path management, and no
+  anonymous `read`. It cannot express "this person, this camera", because it does not know
+  our people.
+- `http` — MediaMTX POSTs each action to a URL of ours with the user, password, token, IP,
+  action, path and protocol, and allows it on a 20x. This is the one that fits: the API
+  already holds sessions, teams and cameras, so it can answer the question properly.
+- `jwt` — MediaMTX pulls a JWKS and validates a token carrying a `mediamtx_permissions`
+  claim. No callback per view, but it needs an identity server we do not have, and the
+  permissions have to be minted before the path exists.
+
+The plan is `internal` first, then `http`. A new unauthenticated-by-session endpoint —
+`POST /api/internal/mediamtx-auth`, bound to the control network and nothing else — takes
+MediaMTX's payload and decides:
+
+1. `publish` and `api` are matched against a static credential the agent and the API hold,
+   so only we can create paths and push to them.
+2. `read` is matched against a per-preview token. `PreviewManager.start` already mints the
+   path name; it would mint a viewing token alongside it, bound to the preview id, the user
+   and the team, and store it on the `_Live` record it already keeps. The endpoint looks up
+   the path in the manager and checks the token against it. Nothing new persists — previews
+   are process-local and die with the process, which is already true of the paths themselves.
+3. The browser sends it as the password of an `Authorization: Basic` header on the WHEP
+   request, which is how MediaMTX takes credentials for WebRTC and HLS.
+
+In agent mode the manager lives in the agent and the endpoint lives in the API, so the lookup
+in step 2 goes over the command bus that `app/services/commands.py` already carries.
+
+### What changes
+
+- `deploy/mediamtx.yml` gains `authInternalUsers` (and later `authMethod: http` plus
+  `authHTTPAddress`), with the credentials injected as `MTX_*` env from compose rather than
+  written into the file.
+- `MEDIAMTX_PUBLISH_URL` and `MEDIAMTX_API_URL` carry credentials, which means they become
+  secrets: `app/security/redaction.py` already exists for exactly this and the publish URL is
+  built in `_publish_target`, so there is one place to change.
+- `PreviewOut` grows a token field beside `whep_url`, and the frontend player attaches it to
+  the WHEP request instead of dialling the URL bare.
+- The reaper is unaffected. It asks MediaMTX over the API, which by then is an authenticated
+  call like any other.
+- Nothing in the recorder moves. Recording never touches MediaMTX.

@@ -1,11 +1,18 @@
 # Preview only. Recording is ffmpeg's job -- MediaMTX republishes for the browser.
 logLevel: info
 
-# Cameras are pulled on demand and dropped when nobody is watching, so a tile
-# nobody has open costs no camera session. Cameras cap concurrent sessions hard.
-sourceOnDemand: yes
-sourceOnDemandStartTimeout: 10s
-sourceOnDemandCloseAfter: 10s
+# Nothing is pulled here. A camera lives at 127.0.0.1:<port> inside one network
+# namespace the agent owns, and this is a different container with no way into
+# it -- so the direction is inverted: the agent spawns an ffmpeg *inside* the
+# namespace which copies the stream out to this server over RTSP (-c copy, no
+# transcode), reaching it over the namespace's control route. MediaMTX only ever
+# sees a publisher arriving on a path.
+#
+# Which is why there is no sourceOnDemand here: it governs paths MediaMTX pulls
+# itself, and ours have no source to pull, so it would be inert and misleading.
+# "Drop it when nobody is watching" happens where it can -- the agent reaps idle
+# previews (PREVIEW_IDLE_SECONDS), because a preview holds a camera session open
+# and cameras cap concurrent sessions hard.
 
 # ssh -L forwards TCP only; UDP RTSP through a tunnel delivers nothing.
 rtspTransports: [tcp]
@@ -13,6 +20,13 @@ rtspTransports: [tcp]
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
+# WebRTC offers the browser the addresses MediaMTX finds on its own interfaces,
+# which in compose is 172.28.x.x -- a bridge address no laptop on the LAN can
+# reach. The session negotiates, the player reports no error, and video simply
+# never starts. This has to carry the address browsers actually dial. Compose
+# sets it from PREVIEW_HOST as MTX_WEBRTCADDITIONALHOSTS (comma-separated), so a
+# deployment does not have to edit this file.
+webrtcAdditionalHosts: []
 
 hls: yes
 hlsAddress: :8888
@@ -24,5 +38,7 @@ srt: no
 api: yes
 apiAddress: :9997
 
-# Paths are added at runtime over the API as cameras come and go.
+# Paths are added over the API just before a publisher starts and deleted when
+# it stops -- see app/services/mediamtx.py. An empty config is the whole point:
+# a path with no source waits for someone to publish to it.
 paths: {}

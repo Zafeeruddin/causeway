@@ -5,6 +5,7 @@ import { ApiError, api } from "@/lib/api";
 import { ago, bytes, modeLabel } from "@/lib/format";
 import type { Camera, Gate, ImportResult, Me, Profile, Source } from "@/lib/types";
 import { GateLadder } from "@/components/GateLadder";
+import { LivePreview } from "@/components/LivePreview";
 import {
   Badge, Banner, Button, Card, CardHeader, Dot, Empty, Eyebrow, Field,
   Input, Modal, Select, Textarea, type Tone,
@@ -22,6 +23,7 @@ export default function CamerasPage() {
   const [error, setError] = useState("");
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [recording, setRecording] = useState(false);
+  const [watching, setWatching] = useState<Camera | null>(null);
 
   const load = useCallback(async () => {
     setCameras(await api.cameras());
@@ -103,6 +105,7 @@ export default function CamerasPage() {
               testing={testing === camera.id}
               selected={selection.has(camera.id)}
               onToggle={() => toggle(camera.id)}
+              onPreview={() => setWatching(camera)}
               onTest={() => test(camera)}
               onDelete={async () => {
                 await api.deleteCamera(camera.id);
@@ -124,6 +127,18 @@ export default function CamerasPage() {
         }}
       />
 
+      {watching ? (
+        <Modal
+          open
+          onClose={() => setWatching(null)}
+          title={watching.name}
+          sub="Live from the camera. Closing this stops your view of it."
+          width="max-w-3xl"
+        >
+          <LivePreview camera={watching} />
+        </Modal>
+      ) : null}
+
       <RecordModal
         open={recording}
         cameraIds={[...selection]}
@@ -139,7 +154,7 @@ export default function CamerasPage() {
 }
 
 function CameraRow({
-  camera, profile, gates, testing, selected, onToggle, onTest, onDelete,
+  camera, profile, gates, testing, selected, onToggle, onPreview, onTest, onDelete,
 }: {
   camera: Camera;
   profile?: Profile;
@@ -147,6 +162,7 @@ function CameraRow({
   testing: boolean;
   selected: boolean;
   onToggle: () => void;
+  onPreview: () => void;
   onTest: () => void;
   onDelete: () => void;
 }) {
@@ -179,6 +195,9 @@ function CameraRow({
         </div>
 
         <div className="flex gap-2">
+          <Button size="sm" onClick={onPreview} disabled={!camera.sources.length}>
+            Preview
+          </Button>
           <Button size="sm" onClick={onTest} disabled={testing}>
             {testing ? "Testing…" : "Test"}
           </Button>

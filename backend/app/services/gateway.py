@@ -16,16 +16,18 @@ rather than per request, so no route has to know which deployment it is in.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import GateStatus, ProfileState
+from app.enums import GateStatus, ProfileState, SourceKind
 from app.gates.ladder import GateResult
 from app.models import Camera, CameraSource, ConnectionProfile
 from app.services.commands import CommandBus, command_bus
 from app.services.connections import ConnectOutcome
+from app.services.preview import PreviewInfo
 
 log = structlog.get_logger(__name__)
 
@@ -158,6 +160,66 @@ class RemoteGateway:
             return await self._bus.call("agent.ping")
         except Exception as exc:  # noqa: BLE001
             return {"up": False, "detail": getattr(exc, "user_message", str(exc))}
+
+
+class RemotePreview:
+    """Preview, asked of the agent.
+
+    Starting one means spawning a process inside a network namespace, so unlike
+    the rest of the API this has no in-process fallback worth having in compose:
+    the API container could not do it if it tried.
+    """
+
+    def __init__(self, bus: CommandBus | None = None) -> None:
+        self._bus = bus or command_bus()
+
+    async def start(
+        self,
+        db: AsyncSession,
+        camera: Camera,
+        user_id: str,
+        kind: SourceKind | None = None,
+    ) -> PreviewInfo:
+        payload = await self._bus.call(
+            "preview.start",
+            {
+                "camera_id": camera.id,
+                "user_id": user_id,
+                "source_kind": kind.value if kind else None,
+            },
+        )
+        return preview_from_payload(payload)
+
+    async def stop(self, preview_id: str) -> None:
+        await self._bus.call("preview.stop", {"preview_id": preview_id})
+
+    async def list(self, user_id: str | None = None) -> list[PreviewInfo]:
+        payload = await self._bus.call("preview.list", {"user_id": user_id})
+        return [preview_from_payload(item) for item in payload.get("previews", [])]
+
+
+def preview_payload(info: PreviewInfo) -> dict[str, Any]:
+    return {
+        "id": info.id,
+        "path": info.path,
+        "camera_id": info.camera_id,
+        "source_kind": info.source_kind.value,
+        "started_at": info.started_at.isoformat(),
+        "expires_at": info.expires_at.isoformat(),
+        "viewers": info.viewers,
+    }
+
+
+def preview_from_payload(payload: dict[str, Any]) -> PreviewInfo:
+    return PreviewInfo(
+        id=payload["id"],
+        path=payload["path"],
+        camera_id=payload["camera_id"],
+        source_kind=SourceKind(payload["source_kind"]),
+        started_at=datetime.fromisoformat(payload["started_at"]),
+        expires_at=datetime.fromisoformat(payload["expires_at"]),
+        viewers=payload.get("viewers", 0),
+    )
 
 
 async def _refresh(db: AsyncSession, instance: Any) -> None:

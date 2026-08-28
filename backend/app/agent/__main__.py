@@ -16,12 +16,14 @@ import structlog
 
 from app.agent.worker import Agent
 from app.config import settings
+from app.db import sessionmaker
 from app.main import configure_logging
 from app.net.netns import NetnsManager
 from app.net.ports import PortPool
 from app.net.ssh import TunnelManager
 from app.services.connections import ConnectionService
 from app.services.events import event_bus
+from app.services.preview import PreviewManager
 
 log = structlog.get_logger(__name__)
 
@@ -31,7 +33,11 @@ def build_agent() -> Agent:
     netns = NetnsManager(prefix=cfg.netns_prefix, control_cidrs=cfg.control_cidrs)
     pool = PortPool(low=cfg.tunnel_port_min, high=cfg.tunnel_port_max)
     tunnels = TunnelManager(control_dir=cfg.ssh_control_dir, pool=pool)
-    return Agent(connections=ConnectionService(netns=netns, tunnels=tunnels))
+    connections = ConnectionService(netns=netns, tunnels=tunnels)
+    return Agent(
+        connections=connections,
+        previews=PreviewManager(connections=connections, sessions=sessionmaker()),
+    )
 
 
 async def main() -> None:

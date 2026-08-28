@@ -310,6 +310,29 @@ class DownloadLink(BaseModel):
     expires_in: int
 
 
+# ---- live preview ------------------------------------------------------
+
+
+class PreviewStart(BaseModel):
+    source_kind: SourceKind | None = Field(
+        default=None, description="Defaults to the raw camera feed."
+    )
+
+
+class PreviewOut(BaseModel):
+    id: str
+    camera_id: str
+    source_kind: SourceKind
+    #: The MediaMTX path. Random, so knowing a camera id is not enough to watch it.
+    path: str
+    #: Where the browser negotiates WebRTC. Everything else about the stream is
+    #: between the browser and MediaMTX.
+    whep_url: str
+    started_at: datetime
+    expires_at: datetime
+    viewers: int = 0
+
+
 # ---- comparison --------------------------------------------------------
 
 

@@ -49,6 +49,19 @@ export interface Camera {
   location: string; is_enabled: boolean; sources: Source[];
 }
 
+/** A live WebRTC view of one camera, held open only while somebody is watching. */
+export interface Preview {
+  id: string; camera_id: string; source_kind: SourceKind;
+  /** The MediaMTX path. Random, so knowing a camera id is not enough to watch it. */
+  path: string;
+  /** Where the browser negotiates WebRTC. Everything after that is browser to MediaMTX. */
+  whep_url: string;
+  started_at: string;
+  /** The hard stop. The stream also ends on its own once the last viewer leaves. */
+  expires_at: string;
+  viewers: number;
+}
+
 export interface ImportIssue { line: number; value: string; reason: string }
 export interface ImportResult {
   summary: string; created: number; dry_run: boolean;

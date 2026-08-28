@@ -29,8 +29,23 @@ services:
     image: bluenviron/mediamtx:latest
     environment:
       MTX_PROTOCOLS: tcp
+      # WebRTC offers the browser whatever addresses MediaMTX can see, which in
+      # here is a 172.28.x.x bridge address no other machine can reach: the
+      # session negotiates and then video never starts, with nothing logged.
+      # PREVIEW_HOST must be the address browsers actually dial; the default
+      # only holds when the browser is on this machine.
+      MTX_WEBRTCADDITIONALHOSTS: ${PREVIEW_HOST:-127.0.0.1}
     volumes: ["./deploy/mediamtx.yml:/mediamtx.yml:ro"]
-    ports: ["8889:8889", "8189:8189/udp", "8888:8888"]
+    # 8889 signalling and 8189 media are for browsers. The RTSP ingest and the
+    # control API are bound to loopback instead: they are how a single-process
+    # dev run (make api) publishes and manages paths, and neither has any
+    # authentication in front of it.
+    ports:
+      - "8889:8889"
+      - "8189:8189/udp"
+      - "8888:8888"
+      - "127.0.0.1:8554:8554"
+      - "127.0.0.1:9997:9997"
     networks: [control]
 
   api:

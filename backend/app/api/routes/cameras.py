@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import current_principal
-from app.api.deps import gateway, load_camera
+from app.api.deps import NOT_FOUND, gateway, load_camera, previews
 from app.api.schemas import (
     CameraCreate,
     CameraOut,
@@ -20,7 +20,10 @@ from app.api.schemas import (
     ImportPreview,
     ImportRequest,
     ImportResponse,
+    PreviewOut,
+    PreviewStart,
 )
+from app.config import settings
 from app.db import Principal, get_session, scoped_select
 from app.models import Camera, CameraSource, ConnectionProfile
 from app.security.secrets import secrets_backend
@@ -33,6 +36,7 @@ from app.services.camera_import import (
     parse_source_url,
 )
 from app.services.gateway import ConnectionGateway
+from app.services.preview import PreviewGateway, PreviewInfo, whep_url
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -167,6 +171,65 @@ async def test_camera(
         team_id=camera.team_id,
     )
     return results
+
+
+def _preview_out(info: PreviewInfo) -> PreviewOut:
+    return PreviewOut(
+        id=info.id,
+        camera_id=info.camera_id,
+        source_kind=info.source_kind,
+        path=info.path,
+        whep_url=whep_url(settings().preview_public_base, info.path),
+        started_at=info.started_at,
+        expires_at=info.expires_at,
+        viewers=info.viewers,
+    )
+
+
+@router.post("/{camera_id}/preview", response_model=PreviewOut)
+async def start_preview(
+    body: PreviewStart | None = None,
+    camera: Camera = Depends(load_camera),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+    previewer: PreviewGateway = Depends(previews),
+) -> PreviewOut:
+    """Start watching this camera live.
+
+    The stream is copied, never transcoded, and it stops on its own once nobody
+    is watching -- a preview holds a camera session open, and cameras cap those
+    hard.
+    """
+    kind = body.source_kind if body else None
+    info = await previewer.start(db, camera, principal.user_id, kind)
+    await record(
+        db,
+        principal,
+        "camera.preview",
+        "camera",
+        camera.id,
+        {"source_kind": info.source_kind.value},
+        team_id=camera.team_id,
+    )
+    return _preview_out(info)
+
+
+@router.delete("/{camera_id}/preview/{preview_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_preview(
+    preview_id: str,
+    camera: Camera = Depends(load_camera),
+    principal: Principal = Depends(current_principal),
+    previewer: PreviewGateway = Depends(previews),
+) -> None:
+    """Stop one of your own previews.
+
+    Scoped to the caller's own: two people watching one camera share a stream,
+    and closing one tab must not blank the other person's screen.
+    """
+    mine = {info.id for info in await previewer.list(principal.user_id)}
+    if preview_id not in mine:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    await previewer.stop(preview_id)
 
 
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)

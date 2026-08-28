@@ -31,6 +31,7 @@ Phase 1, in progress. What exists and is tested:
 | Dashboard frontend | done |
 | Connect dispatched from the API to the agent | done |
 | RTSP + HLS side-by-side compare view | done |
+| Live preview in the browser (in-namespace publisher, WebRTC out) | done |
 
 ## Getting started
 
@@ -141,6 +142,20 @@ reach the rest of the system:
   with `NET_ADMIN`, and why `CONNECT_MODE=agent` sends the API's connect,
   disconnect, trust and camera-test straight to it over Redis. Unset (the
   default) runs them in process, which is what `make api` and the tests use.
+- **The preview publish target must be an address, not a hostname.** Docker's
+  resolver lives on the container's own loopback, which does not exist inside a
+  network namespace, so a name there fails to resolve and the failure reads as
+  though the camera were down. `app/services/preview.py` resolves it in the
+  agent and hands ffmpeg an IP.
+- **WebRTC advertises the addresses MediaMTX can see, which in compose are the
+  bridge's.** Unless `webrtcAdditionalHosts` carries the address browsers
+  actually dial — compose sets it from `PREVIEW_HOST` — a viewer on any other
+  machine negotiates a session and then waits for video offered at 172.28.x.x.
+  Nothing errors; the tile just never starts.
+- **A preview holds a camera session open, so the reaper is not optional.**
+  Cameras cap concurrent sessions hard, and a tab left open on a wall display is
+  a session a recording cannot have. `PREVIEW_IDLE_SECONDS` is a grace period
+  for reloads, not a suggestion.
 
 ## Layout
 
@@ -153,6 +168,8 @@ backend/app/
              vpn/                        four drivers behind one interface
   gates/     ladder.py probes.py         the eight gates
   api/       auth.py                     argon2 + signed session cookies
+  services/  preview.py                  one publisher per camera, reaped when idle
+             mediamtx.py                 preview paths added and dropped over its API
   storage/   client.py keys.py           Versity S3 gateway; team-scoped keys
              retention.py                admission check + oldest-first sweep
 deploy/                                  Dockerfiles, MediaMTX config, storage runbook

@@ -8,7 +8,7 @@
 
 import type {
   Admission, Camera, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
-  Profile, Recording, ReachMode, SourceKind, SshAuth, StorageUsage, Team, User, VpnKind,
+  Preview, Profile, Recording, ReachMode, SourceKind, SshAuth, StorageUsage, Team, User, VpnKind,
 } from "./types";
 
 export class ApiError extends Error {
@@ -106,6 +106,18 @@ export const api = {
     });
     return request<ImportResult>(`/api/cameras/import/csv?${query}`, { method: "POST", body: form });
   },
+
+  // live preview
+  startPreview: (id: string, sourceKind?: SourceKind) =>
+    request<Preview>(`/api/cameras/${id}/preview`, {
+      method: "POST", ...json({ source_kind: sourceKind ?? null }),
+    }),
+  /**
+   * Scoped to your own view: two people watching one camera share a stream, so
+   * this ends yours and leaves theirs alone.
+   */
+  stopPreview: (id: string, previewId: string) =>
+    request<void>(`/api/cameras/${id}/preview/${previewId}`, { method: "DELETE" }),
 
   // recordings
   recordings: () => request<Recording[]>("/api/recordings"),

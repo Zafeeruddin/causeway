@@ -13,10 +13,13 @@ from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
+from app.enums import SourceKind
 from app.models import Camera, CameraSource, ConnectionProfile
 from app.services.connections import ConnectionService
-from app.services.gateway import outcome_payload
+from app.services.gateway import outcome_payload, preview_payload
+from app.services.preview import PreviewManager
 
 log = structlog.get_logger(__name__)
 
@@ -43,10 +46,12 @@ class ConnectionCommands:
         connections: ConnectionService,
         sessions: async_sessionmaker[AsyncSession],
         status: Callable[[], dict[str, Any]] | None = None,
+        previews: PreviewManager | None = None,
     ) -> None:
         self.connections = connections
         self._sessions = sessions
         self._status = status or (lambda: {})
+        self.previews = previews
 
     async def handle(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         if name == "agent.ping":
@@ -56,6 +61,9 @@ class ConnectionCommands:
             "profile.disconnect": self._disconnect,
             "profile.trust": self._trust,
             "camera.test_source": self._test_source,
+            "preview.start": self._preview_start,
+            "preview.stop": self._preview_stop,
+            "preview.list": self._preview_list,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -103,6 +111,33 @@ class ConnectionCommands:
             outcome = await self.connections.test_source(db, profile, camera, source)
             await db.commit()
             return outcome_payload(outcome)
+
+    # ---- preview -------------------------------------------------------
+
+    async def _preview_start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.previews is None:
+            raise RuntimeError("this agent does not run previews")
+        async with self._sessions() as db:
+            camera = await db.get(
+                Camera, payload["camera_id"], options=[selectinload(Camera.sources)]
+            )
+            if camera is None:
+                raise Missing("camera")
+            kind = SourceKind(payload["source_kind"]) if payload.get("source_kind") else None
+            info = await self.previews.start(db, camera, payload["user_id"], kind)
+            await db.commit()
+            return preview_payload(info)
+
+    async def _preview_stop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.previews is not None:
+            await self.previews.stop(payload["preview_id"])
+        return {}
+
+    async def _preview_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.previews is None:
+            return {"previews": []}
+        infos = await self.previews.list(payload.get("user_id"))
+        return {"previews": [preview_payload(info) for info in infos]}
 
     async def _profile(self, db: AsyncSession, payload: dict[str, Any]) -> ConnectionProfile:
         profile = await db.get(ConnectionProfile, payload["profile_id"])
