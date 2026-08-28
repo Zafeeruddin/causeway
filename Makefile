@@ -1,4 +1,4 @@
-.PHONY: help dev up down logs api test fmt lint migrate revision seed
+.PHONY: help dev up down logs api agent test fmt lint migrate revision seed
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -17,6 +17,9 @@ logs: ## tail all logs
 
 api:  ## run the API locally against compose infra
 	cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+agent: ## run the recorder agent locally (needs ffmpeg; VPN profiles need root)
+	cd backend && uv run python -m app.agent
 
 test: ## run the backend test suite
 	cd backend && uv run pytest -q

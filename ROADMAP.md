@@ -211,8 +211,11 @@ Straight after Phase 1 lands.
 
 ### What changes
 
-Nothing structural — the camera model and the session directory layout are already built for
-two sources. The work is the compare UI and the shared scrubber.
+Nothing structural, and less than when this was written. As of 28 Aug 2026 the recorder
+already fans out to every source of a camera concurrently, one ffmpeg each, into
+`<recording>/rtsp/` and `<recording>/hls/` under the same session prefix, and each source
+carries its own reachability (`camera_sources.uses_profile_path`). What is left is the
+compare UI and the shared scrubber.
 
 ### Known problem to solve when we build it
 
@@ -311,23 +314,122 @@ outgrow that too — not before.
 
 ---
 
-## 9. Org-wide S3 hardening
+## 9. Org-wide storage hardening
 
-**Status:** `PLANNED` — depends on how the NAS bucket gets set up
+**Status:** `PLANNED` — partially addressed; the quota is the open item
 
 ### Context
 
-MinIO on the NAS will be used org-wide, not just by this app.
+Recordings live on `https://s3.example.com`, a hosted Versity Gateway shared across
+the org. Versity speaks the S3 API but is not AWS S3, and two things it lacks
+changed our design (see `deploy/versity-setup.md`):
+
+- **No lifecycle rules.** Every deletion is ours to make. `app/storage/retention.py`
+  is the only thing that ever removes an object.
+- **No bucket quotas.** There is no server-side ceiling. The admission check
+  before each recording is the only guard, and it depends on our own accounting
+  being right.
+
+The application already runs its own thresholds (60 / 90 / 98 GB) and refuses
+recordings that will not fit rather than discovering the limit mid-write.
 
 ### Trigger
 
-The moment a second application writes to the same MinIO.
+Any of: our accounting drifts from what the bucket actually holds; a second
+application starts writing to `cam-recordings`; or the app is still running as
+`storage-root` when someone asks who can reach the rest of the gateway.
 
-### What to do then
+### How we'd implement it
 
-- Our own bucket, our own service account, a policy scoped to that bucket only. Never the
-  root credentials, not even in the first version.
-- Bucket versioning off (we write immutable objects, versioning just doubles the disk) but
-  object-lock considered if recordings ever become evidence.
-- Our 100 GB working cap is *our* discipline, not the bucket's size. Add a MinIO quota on
-  the bucket too, so a bug in our retention job cannot eat the org's storage.
+1. **Stop using the root credential.** Create a `cam-dashboard` account and make
+   it the owner of `cam-recordings` — commands are in `deploy/versity-setup.md`.
+   This is the cheapest item here and should not wait for the others.
+2. **Ask for a filesystem quota on the bucket's backing directory.** Versity
+   sits on a POSIX filesystem, so the operators can likely apply a quota there.
+   That restores the outer safety net with no change on our side.
+3. **Reconcile accounting against reality.** A periodic job that walks
+   `ObjectStore.measure_prefix` per team and compares it with the
+   `storage_objects` table. Drift means an upload that we recorded and the
+   gateway dropped, or an object we deleted and forgot to unrecord — both are
+   silent today.
+
+### What changes
+
+Item 1 is a `.env` change. Item 2 is entirely on the gateway side. Item 3 is a
+new arq job plus a `storage_reconciliations` table; nothing in the recording or
+retention path moves, because `measure_prefix` already exists for exactly this.
+
+---
+
+## 10. Alembic migrations
+
+**Status:** `PLANNED` — `cam init-db` creates the schema for now, by decision
+
+### Context
+
+`app/cli.py` builds the schema straight from the models with `create_all`. The schema is new
+and still churning weekly; a migration chain written now would be mostly rewrites of itself,
+and every one of them would have to be reviewed. There is exactly one deployment and no data
+worth preserving across a schema change.
+
+### Trigger
+
+The first of: someone needs to keep data across a schema change, a second deployment appears,
+or the schema goes two cycles without a column moving.
+
+### How we'd implement it
+
+`alembic init`, autogenerate a baseline from the current models, and stamp the existing
+database with it so no one has to rebuild. `make migrate` and `make revision` already exist
+in the Makefile pointing at Alembic, so the workflow is in place before the chain is.
+
+### What changes
+
+`cam init-db` stops being the way the schema is created and becomes a dev shortcut, or goes.
+Nothing else: the models are already the single definition, which is what makes autogenerate
+usable at all. Note that `storage_objects.source_kind` is nullable — session-level objects
+like `gaps.json` belong to no source — so the baseline must not tighten it.
+
+---
+
+## 11. Dispatching connect from the API to the agent
+
+**Status:** `DONE` — 28 Aug 2026. `app/services/gateway.py` (the seam),
+`app/services/commands.py` (the bus), `app/agent/commands.py` (the agent's side).
+
+### Context
+
+Network namespaces belong to a container. The agent creates them, holds the VPN clients and
+the SSH masters, and runs every ffmpeg, which is why it is the only service with
+`NET_ADMIN`. The API's `POST /api/profiles/{id}/connect` still runs `ConnectionService` in
+the API container, where a namespace cannot be created and a forward opened by the agent
+cannot be reached.
+
+### What we did
+
+Request/response over the Redis that already carries events. `CONNECT_MODE=agent` (set on
+the api service in compose) swaps `ConnectionService` for `RemoteGateway`, which publishes on
+`cam:commands` and waits on a per-command reply channel. The agent serves the four commands
+with the same `ConnectionService` calls the API used to make itself, so there is one
+implementation of connecting and two ways to reach it. Gate results still stream over the
+team channel as they land; the reply carries the outcome, and the endpoint keeps its
+synchronous shape.
+
+Two details worth keeping:
+
+- **Pub/sub, not a queue.** `PUBLISH` reports its subscriber count, so an API with no agent
+  behind it answers 503 "the recorder agent is not running" immediately, rather than timing
+  out two minutes later or queueing a connect that fires ten minutes after the person gave up.
+- **The certificate pin is written by the agent.** The dial that reads it happens in a
+  separate command, and the API request's transaction has not committed yet when that command
+  starts — pinning it API-side would redial against the certificate the user was asked about.
+
+### What changed
+
+- `ConnectionGateway` has two implementations: `ConnectionService` itself (in process, and
+  what the test suite uses) and `RemoteGateway`. Chosen once at startup, not per request.
+- `app/services/commands.py` is a separate channel from the event fan-out, same Redis client.
+- `/api/health` and `/api/capabilities` report the *agent's* namespace availability in agent
+  mode, so "VPN profiles cannot work here" is visible before someone presses connect.
+- Nothing in the recorder changed. `SourcePath.open` already reconnects through
+  `ConnectionService` inside the agent, which owns it either way.

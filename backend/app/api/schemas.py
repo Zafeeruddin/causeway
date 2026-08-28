@@ -1,0 +1,330 @@
+"""Request and response shapes.
+
+Response models are the last line of defence on credentials: they list fields
+explicitly rather than dumping ORM objects, so a new sealed-ref column added to
+a model cannot start appearing in API output by accident.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.enums import (
+    GateStatus,
+    ProfileState,
+    ReachMode,
+    RecordingState,
+    Role,
+    SourceKind,
+    SshAuth,
+    VpnKind,
+)
+
+
+class Model(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---- auth --------------------------------------------------------------
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TeamBrief(Model):
+    id: str
+    name: str
+    slug: str
+
+
+class Me(Model):
+    id: str
+    email: str
+    display_name: str
+    role: Role
+    teams: list[TeamBrief] = []
+
+
+# ---- teams and users ---------------------------------------------------
+
+
+class TeamCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    description: str = ""
+
+
+class TeamOut(TeamBrief):
+    description: str = ""
+    member_count: int = 0
+
+
+class UserCreate(BaseModel):
+    email: str
+    display_name: str = ""
+    password: str = Field(min_length=10, description="At least 10 characters.")
+    role: Role = Role.MEMBER
+
+
+class UserOut(Model):
+    id: str
+    email: str
+    display_name: str
+    role: Role
+    is_active: bool
+    last_login_at: datetime | None = None
+
+
+class MembershipRequest(BaseModel):
+    user_id: str
+
+
+# ---- connection profiles -----------------------------------------------
+
+
+class ProfileCreate(BaseModel):
+    team_id: str
+    name: str = Field(min_length=1, max_length=120)
+    mode: ReachMode
+
+    vpn_kind: VpnKind = VpnKind.NONE
+    vpn_gateway: str = ""
+    vpn_port: int = 443
+    vpn_username: str = ""
+    vpn_password: str = ""
+    vpn_realm: str = ""
+    wg_config: str = ""
+
+    jump_host: str = ""
+    jump_port: int = 22
+    jump_username: str = ""
+    jump_auth: SshAuth = SshAuth.PASSWORD
+    jump_password: str = ""
+    jump_private_key: str = ""
+
+    whitelist_url: str | None = None
+
+    @field_validator("vpn_kind")
+    @classmethod
+    def _vpn_matches_mode(cls, value: VpnKind, info) -> VpnKind:
+        mode = info.data.get("mode")
+        if mode and ReachMode(mode).has_vpn and value is VpnKind.NONE:
+            raise ValueError("this mode needs a VPN type - pick one, or use a mode without a VPN")
+        return value
+
+    @field_validator("jump_host")
+    @classmethod
+    def _jump_present_when_needed(cls, value: str, info) -> str:
+        mode = info.data.get("mode")
+        if mode and ReachMode(mode).has_jump and not value.strip():
+            raise ValueError("this mode needs a jump host address")
+        return value
+
+
+class ProfileUpdate(BaseModel):
+    name: str | None = None
+    vpn_gateway: str | None = None
+    vpn_port: int | None = None
+    vpn_username: str | None = None
+    vpn_password: str | None = None
+    vpn_realm: str | None = None
+    jump_host: str | None = None
+    jump_port: int | None = None
+    jump_username: str | None = None
+    jump_auth: SshAuth | None = None
+    jump_password: str | None = None
+    jump_private_key: str | None = None
+    whitelist_url: str | None = None
+
+
+class ProfileOut(Model):
+    """No credential fields, by construction. Only whether one is set."""
+
+    id: str
+    team_id: str
+    name: str
+    mode: ReachMode
+    state: ProfileState
+    state_detail: str = ""
+
+    vpn_kind: VpnKind
+    vpn_gateway: str = ""
+    vpn_port: int = 443
+    vpn_username: str = ""
+    has_vpn_password: bool = False
+
+    jump_host: str = ""
+    jump_port: int = 22
+    jump_username: str = ""
+    jump_auth: SshAuth = SshAuth.PASSWORD
+    has_jump_credentials: bool = False
+
+    whitelist_url: str | None = None
+    trusted_cert: str | None = None
+    trusted_cert_algorithm: str = "sha256"
+    trusted_cert_accepted_at: datetime | None = None
+
+    tunnel_ip: str | None = None
+    last_connected_at: datetime | None = None
+
+
+class GateResultOut(BaseModel):
+    key: str
+    index: int
+    title: str
+    status: GateStatus
+    message: str = ""
+    detail: dict[str, Any] = {}
+    duration_ms: int = 0
+
+
+class ConnectResponse(BaseModel):
+    attempt_id: str
+    state: ProfileState
+    gates: list[GateResultOut]
+    #: Set when a gate is waiting on the user -- today, a certificate to trust.
+    action_required: dict[str, Any] | None = None
+
+
+class TrustRequest(BaseModel):
+    fingerprint: str = Field(min_length=32, max_length=160)
+
+    @field_validator("fingerprint")
+    @classmethod
+    def _normalise(cls, value: str) -> str:
+        return value.replace(":", "").replace(" ", "").lower()
+
+
+# ---- cameras -----------------------------------------------------------
+
+
+class SourceIn(BaseModel):
+    kind: SourceKind
+    url: str
+    username: str = ""
+    password: str = ""
+    #: False for an HLS feed reachable directly while the RTSP needs the tunnel.
+    uses_profile_path: bool = True
+
+
+class CameraCreate(BaseModel):
+    team_id: str
+    profile_id: str
+    name: str = Field(min_length=1, max_length=160)
+    location: str = ""
+    sources: list[SourceIn] = Field(min_length=1)
+
+
+class SourceOut(Model):
+    id: str
+    kind: SourceKind
+    url: str
+    host: str = ""
+    port: int = 0
+    username: str = ""
+    uses_profile_path: bool = True
+    last_probe_at: datetime | None = None
+    last_probe_ok: bool | None = None
+    last_probe_detail: str = ""
+    codec: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+
+
+class CameraOut(Model):
+    id: str
+    team_id: str
+    profile_id: str
+    name: str
+    location: str = ""
+    is_enabled: bool = True
+    sources: list[SourceOut] = []
+
+
+class ImportRequest(BaseModel):
+    team_id: str
+    profile_id: str
+    text: str = Field(min_length=1)
+    #: Preview without writing anything.
+    dry_run: bool = False
+
+
+class ImportIssueOut(BaseModel):
+    line: int
+    value: str
+    reason: str
+
+
+class ImportPreview(BaseModel):
+    name: str
+    location: str = ""
+    sources: list[dict[str, Any]] = []
+
+
+class ImportResponse(BaseModel):
+    summary: str
+    created: int = 0
+    cameras: list[ImportPreview] = []
+    duplicates: list[ImportIssueOut] = []
+    rejected: list[ImportIssueOut] = []
+    dry_run: bool = False
+
+
+# ---- recordings --------------------------------------------------------
+
+
+class RecordingCreate(BaseModel):
+    camera_ids: list[str] = Field(min_length=1)
+    seconds: int = Field(ge=30, le=900)
+    sources: list[SourceKind] | None = Field(
+        default=None, description="Defaults to every source the camera has."
+    )
+
+
+class RecordingOut(Model):
+    id: str
+    team_id: str
+    camera_id: str
+    state: RecordingState
+    requested_seconds: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    captured_seconds: float = 0.0
+    gap_seconds: float = 0.0
+    total_bytes: int = 0
+    failure_reason: str = ""
+
+
+class DownloadLink(BaseModel):
+    #: Null for the session's own sidecar, which belongs to no single source.
+    source_kind: SourceKind | None
+    filename: str
+    bytes: int
+    url: str
+    expires_in: int
+
+
+# ---- storage -----------------------------------------------------------
+
+
+class StorageUsage(BaseModel):
+    used_bytes: int
+    warn_bytes: int
+    gc_bytes: int
+    hard_bytes: int
+    state: Literal["ok", "warning", "collecting", "full"]
+    message: str = ""
+    by_team: dict[str, int] = {}
+
+
+class AdmissionOut(BaseModel):
+    allowed: bool
+    reason: str = ""
+    estimated_bytes: int = 0
+    headroom_bytes: int = 0

@@ -6,14 +6,19 @@ import logging
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.api.routes import admin, auth, cameras, profiles, recordings, ws
 from app.config import settings
-from app.enums import ReachMode, VpnKind
+from app.enums import ReachMode, SourceKind, SshAuth, VpnKind
 from app.net.netns import NetnsManager
 from app.net.ports import PortPool
 from app.net.ssh import TunnelManager
+from app.services.commands import CommandError, command_bus
+from app.services.connections import ConnectionService
+from app.services.events import event_bus
+from app.services.gateway import RemoteGateway
 
 log = structlog.get_logger(__name__)
 
@@ -40,26 +45,39 @@ def configure_logging() -> None:
 async def lifespan(app: FastAPI):
     configure_logging()
     cfg = settings()
+    app.state.netns = None
+    app.state.ports = None
 
-    app.state.netns = NetnsManager(prefix=cfg.netns_prefix)
-    app.state.ports = PortPool(low=cfg.tunnel_port_min, high=cfg.tunnel_port_max)
-    app.state.tunnels = TunnelManager(control_dir=cfg.ssh_control_dir, pool=app.state.ports)
-
-    log.info(
-        "started",
-        env=cfg.app_env,
-        netns_available=app.state.netns.available,
-        port_pool=f"{cfg.tunnel_port_min}-{cfg.tunnel_port_max}",
-    )
-    if not app.state.netns.available:
-        log.warning(
-            "netns.unavailable",
-            hint="VPN profiles need CAP_NET_ADMIN. Direct-mode profiles work regardless.",
+    if cfg.connect_mode == "agent":
+        # Namespaces belong to a container. This process cannot create one, and
+        # could not use a forward the agent opened even if it could, so it does
+        # not pretend to own any of it -- it asks. ROADMAP entry 11.
+        app.state.gateway = RemoteGateway()
+        log.info("started", env=cfg.app_env, connect_mode="agent")
+    else:
+        app.state.netns = NetnsManager(prefix=cfg.netns_prefix, control_cidrs=cfg.control_cidrs)
+        app.state.ports = PortPool(low=cfg.tunnel_port_min, high=cfg.tunnel_port_max)
+        app.state.tunnels = TunnelManager(control_dir=cfg.ssh_control_dir, pool=app.state.ports)
+        app.state.gateway = ConnectionService(netns=app.state.netns, tunnels=app.state.tunnels)
+        log.info(
+            "started",
+            env=cfg.app_env,
+            connect_mode="inproc",
+            netns_available=app.state.netns.available,
+            port_pool=f"{cfg.tunnel_port_min}-{cfg.tunnel_port_max}",
         )
+        if not app.state.netns.available:
+            log.warning(
+                "netns.unavailable",
+                hint="VPN profiles need CAP_NET_ADMIN. Direct-mode profiles work regardless.",
+            )
     try:
         yield
     finally:
-        await app.state.netns.destroy_all()
+        await event_bus().close()
+        await command_bus().close()
+        if app.state.netns is not None:
+            await app.state.netns.destroy_all()
         log.info("stopped")
 
 
@@ -72,15 +90,36 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
 
+    for module in (auth, admin, profiles, cameras, recordings):
+        app.include_router(module.router)
+    app.include_router(ws.router)
+
+    @app.exception_handler(ValueError)
+    async def _value_error(request: Request, exc: ValueError) -> JSONResponse:
+        """Domain errors carry messages written for people; surface them as 422
+        rather than letting them become an opaque 500."""
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)}
+        )
+
+    @app.exception_handler(CommandError)
+    async def _command_error(request: Request, exc: CommandError) -> JSONResponse:
+        """The agent is unreachable, slow, or refused. None of those are the
+        caller's fault, and all of them read better than a 500."""
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": exc.user_message}
+        )
+
     @app.get("/api/health")
     async def health() -> JSONResponse:
-        return JSONResponse(
-            {
-                "status": "ok",
-                "netns_available": app.state.netns.available,
-                "ports_in_use": app.state.ports.in_use,
-            }
-        )
+        # Reported from the wiring rather than the setting: what this process
+        # can actually do is the question being asked.
+        body: dict = {
+            "status": "ok",
+            "connect_mode": "inproc" if app.state.netns is not None else "agent",
+        }
+        body.update(await _network_status(app))
+        return JSONResponse(body)
 
     @app.get("/api/capabilities")
     async def capabilities() -> dict:
@@ -88,7 +127,9 @@ def create_app() -> FastAPI:
         return {
             "reach_modes": [m.value for m in ReachMode],
             "vpn_kinds": [k.value for k in VpnKind],
-            "netns_available": app.state.netns.available,
+            "ssh_auth": [a.value for a in SshAuth],
+            "source_kinds": [k.value for k in SourceKind],
+            **await _network_status(app),
             "max_streams_per_user": settings().max_streams_per_user,
             "max_concurrent_users": settings().max_concurrent_users,
             "record_default_seconds": settings().record_default_seconds,
@@ -96,6 +137,21 @@ def create_app() -> FastAPI:
         }
 
     return app
+
+
+async def _network_status(app: FastAPI) -> dict:
+    """Whether a VPN profile can be dialled at all, asked of whichever process
+    would have to do the dialling."""
+    if app.state.netns is not None:
+        return {
+            "netns_available": app.state.netns.available,
+            "ports_in_use": app.state.ports.in_use,
+        }
+    reported = await app.state.gateway.ping()
+    return {
+        "netns_available": bool(reported.get("netns_available")),
+        "agent": reported,
+    }
 
 
 app = create_app()

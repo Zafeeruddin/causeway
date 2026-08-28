@@ -6,8 +6,23 @@ import asyncio
 from dataclasses import dataclass, field
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+from app.api.auth import hash_password
+from app.db import get_session
+from app.enums import Role
+from app.main import create_app
+from app.models import Base, Team, TeamMember, User
+from app.net.netns import NetnsManager
+from app.net.ports import PortPool
 from app.net.runner import ProcResult
+from app.net.ssh import TunnelManager
+from app.security.secrets import MemoryBackend, set_secrets_backend
+from app.services.connections import ConnectionService
+from app.services.events import NullBus, set_event_bus
 
 
 def reader_for(lines: list[str]) -> asyncio.StreamReader:
@@ -102,3 +117,131 @@ def addr_show() -> ProcResult:
     return ProcResult(
         0, "3: ppp0    inet 10.212.134.88 peer 10.212.134.1/32 scope global ppp0\n", ""
     )
+
+
+# ---- API test harness --------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def db_engine():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def sessions(db_engine):
+    return async_sessionmaker(db_engine, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def bus():
+    b = NullBus()
+    set_event_bus(b)
+    return b
+
+
+@pytest_asyncio.fixture
+async def app(sessions, bus):
+    set_secrets_backend(MemoryBackend())
+    application = create_app()
+
+    async def override():
+        async with sessions() as sess:
+            try:
+                yield sess
+                await sess.commit()
+            except Exception:
+                await sess.rollback()
+                raise
+
+    application.dependency_overrides[get_session] = override
+    application.state.netns = NetnsManager(prefix="test")
+    application.state.ports = PortPool(low=20000, high=20099)
+    application.state.tunnels = TunnelManager(control_dir="/tmp/cam-test-ctl")
+    application.state.gateway = ConnectionService(
+        netns=application.state.netns,
+        tunnels=application.state.tunnels,
+        secrets=MemoryBackend(),
+        bus=bus,
+    )
+    return application
+
+
+@pytest_asyncio.fixture
+async def seeded(sessions):
+    """An admin, two teams, and one member who belongs to exactly one of them."""
+    async with sessions() as db:
+        admin = User(
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("admin-password"),
+            role=Role.ADMIN,
+        )
+        member = User(
+            email="qa@example.com",
+            display_name="QA",
+            password_hash=hash_password("member-password"),
+            role=Role.MEMBER,
+        )
+        other = User(
+            email="ops@example.com",
+            display_name="Ops",
+            password_hash=hash_password("other-password"),
+            role=Role.MEMBER,
+        )
+        mofa = Team(name="MOFA", slug="mofa")
+        ops = Team(name="Ops", slug="ops")
+        db.add_all([admin, member, other, mofa, ops])
+        await db.flush()
+        db.add_all(
+            [
+                TeamMember(team_id=mofa.id, user_id=member.id),
+                TeamMember(team_id=ops.id, user_id=other.id),
+            ]
+        )
+        await db.commit()
+        return {
+            "admin": admin.id,
+            "member": member.id,
+            "other": other.id,
+            "mofa": mofa.id,
+            "ops": ops.id,
+        }
+
+
+@pytest_asyncio.fixture
+async def client(app):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def as_admin(client, seeded):
+    await client.post(
+        "/api/auth/login", json={"email": "admin@example.com", "password": "admin-password"}
+    )
+    return client
+
+
+@pytest_asyncio.fixture
+async def as_member(client, seeded):
+    await client.post(
+        "/api/auth/login", json={"email": "qa@example.com", "password": "member-password"}
+    )
+    return client
+
+
+@pytest_asyncio.fixture
+async def as_other(client, seeded):
+    await client.post(
+        "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
+    )
+    return client

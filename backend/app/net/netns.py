@@ -5,15 +5,33 @@ makes the kill-switch real: inside the namespace the default route belongs to
 the tunnel, so a process cannot fall back to the host's normal egress when the
 VPN drops -- it just fails, which is what we want.
 
-Two routes exist inside each namespace:
+Two kinds of route exist inside each namespace:
 
-  default via the VPN's tun device   -- everything camera-bound
-  <control_cidr> via the veth pair   -- Postgres, Redis, MinIO only
+  default via the VPN's tun device    -- everything camera-bound
+  <control_cidrs> via the veth pair   -- Postgres, Redis, and anything else we
+                                         operate that must not travel the tunnel
 
-The control route is added first and survives the VPN replacing the default,
-because it is more specific. That ordering is the whole trick; if the control
+The control routes are added first and survive the VPN replacing the default,
+because they are more specific. That ordering is the whole trick; if a control
 route were a default too, a dropped VPN would silently reroute camera traffic
 onto the host network.
+
+**Uploads still do not happen in here, even though the storage is local.**
+Versity is on our own network, so a route would work -- ``control_cidrs`` is a
+list precisely so the storage subnet can be added when we have its address.
+Recorders nonetheless write segments to the shared work volume and a shipper
+outside every namespace uploads them, for two reasons that survive the storage
+moving on-network:
+
+* An upload inside a namespace dies with the tunnel and with the namespace. The
+  recorder should be able to tear its namespace down the moment recording ends,
+  while a 900 MB upload is still in flight.
+* Camera networks are RFC1918 and so is ours. A customer VPN that advertises
+  10.0.0.0/8 will collide with a storage host at 10.x.x.x, and the resulting
+  failure looks like a storage outage rather than a routing one.
+
+So add the storage subnet to ``control_cidrs`` if something in the namespace
+genuinely needs it -- but a failing upload is not that something.
 
 Needs CAP_NET_ADMIN. When it is unavailable (local dev without root) the
 manager reports ``available = False`` and callers fall back to LocalRunner --
@@ -35,7 +53,7 @@ from app.net.runner import CommandFailed, LocalRunner, NetnsRunner, Runner
 log = structlog.get_logger(__name__)
 
 #: /30 blocks carved out of here, one per active namespace, for the veth pairs.
-DEFAULT_VETH_POOL = ipaddress.ip_network("10.201.0.0/16")
+DEFAULT_VETH_POOL = ipaddress.IPv4Network("10.201.0.0/16")
 
 
 class NetnsUnavailable(RuntimeError):
@@ -63,13 +81,17 @@ class NetnsManager:
         self,
         *,
         prefix: str = "cam",
-        control_cidr: str = "172.16.0.0/12",
+        control_cidrs: str | list[str] = "172.16.0.0/12",
         pool: ipaddress.IPv4Network = DEFAULT_VETH_POOL,
         runner: Runner | None = None,
         inside_runner: Callable[[str], Runner] | None = None,
     ) -> None:
         self.prefix = prefix
-        self.control_cidr = control_cidr
+        self.control_cidrs = (
+            [c.strip() for c in control_cidrs.split(",") if c.strip()]
+            if isinstance(control_cidrs, str)
+            else list(control_cidrs)
+        )
         self._pool = pool
         self._host = runner or LocalRunner()
         # How commands are run *inside* a namespace. Injectable so the wiring
@@ -148,12 +170,11 @@ class NetnsManager:
         )
         await inside.run(["ip", "link", "set", ns.peer_if, "up"], check=True)
 
-        # Control-plane traffic only. Deliberately NOT a default route: when the
+        # Control-plane traffic only. Deliberately NOT default routes: when the
         # VPN comes up it installs the default, and camera traffic must never be
         # able to fall back here.
-        await inside.run(
-            ["ip", "route", "add", self.control_cidr, "via", str(ns.host_ip)], check=True
-        )
+        for cidr in self.control_cidrs:
+            await inside.run(["ip", "route", "add", cidr, "via", str(ns.host_ip)], check=True)
 
         await self._run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
         await self._nat(ns, "-A")
@@ -174,22 +195,23 @@ class NetnsManager:
     # ---- helpers -------------------------------------------------------
 
     async def _nat(self, ns: Namespace, op: str, *, ignore_errors: bool = False) -> None:
-        await self._run(
-            [
-                "iptables",
-                "-t",
-                "nat",
-                op,
-                "POSTROUTING",
-                "-s",
-                f"{ns.ns_ip}/32",
-                "-d",
-                self.control_cidr,
-                "-j",
-                "MASQUERADE",
-            ],
-            ignore_errors=ignore_errors,
-        )
+        for cidr in self.control_cidrs:
+            await self._run(
+                [
+                    "iptables",
+                    "-t",
+                    "nat",
+                    op,
+                    "POSTROUTING",
+                    "-s",
+                    f"{ns.ns_ip}/32",
+                    "-d",
+                    cidr,
+                    "-j",
+                    "MASQUERADE",
+                ],
+                ignore_errors=ignore_errors,
+            )
 
     async def _run(self, argv: list[str], *, ignore_errors: bool = False) -> None:
         try:

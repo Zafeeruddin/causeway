@@ -41,13 +41,31 @@ async def test_namespace_brings_loopback_up_before_anything_else(monkeypatch):
     assert lo_up < veth, "loopback must come up before the veth pair is wired"
 
 
+async def test_multiple_control_networks_each_get_their_own_specific_route(monkeypatch):
+    """Storage on our own network can be added here -- as a route, never a default."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = FakeRunner()
+    manager = NetnsManager(
+        prefix="cam",
+        control_cidrs="172.28.0.0/16,10.90.0.0/24",
+        runner=runner,
+        inside_runner=lambda _: runner,
+    )
+    await manager.ensure("abcdef12-3456")
+
+    routes = [" ".join(c) for c in runner.calls if "route add" in " ".join(c)]
+    assert any("172.28.0.0/16" in r for r in routes)
+    assert any("10.90.0.0/24" in r for r in routes)
+    assert not any("default" in r for r in routes)
+
+
 async def test_the_control_route_is_specific_and_never_a_default(monkeypatch):
     """If the control route were a default, a dropped VPN would silently reroute
     camera traffic onto the host network instead of failing."""
     monkeypatch.setenv("CAM_FORCE_NETNS", "1")
     runner = FakeRunner()
     manager = NetnsManager(
-        prefix="cam", control_cidr="172.28.0.0/16", runner=runner, inside_runner=lambda _: runner
+        prefix="cam", control_cidrs="172.28.0.0/16", runner=runner, inside_runner=lambda _: runner
     )
 
     await manager.ensure("abcdef12-3456")
