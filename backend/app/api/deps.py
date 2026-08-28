@@ -16,6 +16,7 @@ from app.api.auth import current_principal
 from app.db import Principal, get_session
 from app.models import Camera, ConnectionProfile, Recording
 from app.services.gateway import ConnectionGateway
+from app.services.preview import PreviewGateway
 
 #: Deliberately the same message for "does not exist" and "not yours" -- telling
 #: a member that a camera exists in another team is itself a disclosure.
@@ -26,6 +27,10 @@ def gateway(request: Request) -> ConnectionGateway:
     """In-process or in the agent, decided once at startup. See
     :mod:`app.services.gateway`."""
     return request.app.state.gateway
+
+
+def previews(request: Request) -> PreviewGateway:
+    return request.app.state.previews
 
 
 async def require_team(

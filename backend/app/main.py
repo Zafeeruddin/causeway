@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,7 +20,8 @@ from app.net.ssh import TunnelManager
 from app.services.commands import CommandError, command_bus
 from app.services.connections import ConnectionService
 from app.services.events import event_bus
-from app.services.gateway import RemoteGateway
+from app.services.gateway import RemoteGateway, RemotePreview
+from app.services.preview import PreviewError, PreviewManager
 
 log = structlog.get_logger(__name__)
 
@@ -47,12 +50,14 @@ async def lifespan(app: FastAPI):
     cfg = settings()
     app.state.netns = None
     app.state.ports = None
+    reaper: asyncio.Task | None = None
 
     if cfg.connect_mode == "agent":
         # Namespaces belong to a container. This process cannot create one, and
         # could not use a forward the agent opened even if it could, so it does
         # not pretend to own any of it -- it asks. ROADMAP entry 11.
         app.state.gateway = RemoteGateway()
+        app.state.previews = RemotePreview()
         log.info("started", env=cfg.app_env, connect_mode="agent")
     else:
         app.state.netns = NetnsManager(prefix=cfg.netns_prefix, control_cidrs=cfg.control_cidrs)
@@ -74,6 +79,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if reaper is not None:
+            reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reaper
+        if isinstance(app.state.previews, PreviewManager):
+            await app.state.previews.stop_all()
         await event_bus().close()
         await command_bus().close()
         if app.state.netns is not None:
@@ -100,6 +111,14 @@ def create_app() -> FastAPI:
         rather than letting them become an opaque 500."""
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)}
+        )
+
+    @app.exception_handler(PreviewError)
+    async def _preview_error(request: Request, exc: PreviewError) -> JSONResponse:
+        """A preview that cannot start is a state of the world, not a bad
+        request: the camera is down, or every slot is taken."""
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT, content={"detail": exc.user_message}
         )
 
     @app.exception_handler(CommandError)
@@ -137,6 +156,16 @@ def create_app() -> FastAPI:
         }
 
     return app
+
+
+async def _reap_previews(previews: PreviewManager) -> None:
+    interval = settings().preview_reap_seconds
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await previews.reap()
+        except Exception:  # noqa: BLE001 - a bad sweep must not end the loop
+            log.exception("preview.reap_failed")
 
 
 async def _network_status(app: FastAPI) -> dict:

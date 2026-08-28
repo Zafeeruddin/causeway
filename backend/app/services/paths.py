@@ -1,5 +1,9 @@
 """Getting one camera source into a state ffmpeg can read, over and over.
 
+Used by both the things that consume a camera: the recorder, which reads it for
+minutes at a time, and preview, which republishes it for as long as someone is
+watching. Neither owns it, which is why it lives here rather than in either.
+
 A recording outlives any single connection, so this is deliberately not "the
 tunnel we opened at the start". Every time the supervisor reopens a path it
 re-reads the profile, re-checks that the connection is genuinely up rather than

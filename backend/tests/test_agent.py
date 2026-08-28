@@ -393,7 +393,7 @@ async def _source_of(sessions, kind: SourceKind) -> CameraSource:
 
 
 async def test_a_direct_profile_needs_no_dial(sessions, fixture_ids):
-    from app.agent.paths import ProfileSourcePath
+    from app.services.paths import ProfileSourcePath
 
     source = await _source_of(sessions, SourceKind.RTSP)
     path = ProfileSourcePath(
@@ -415,7 +415,7 @@ async def test_a_direct_profile_needs_no_dial(sessions, fixture_ids):
 async def test_a_source_off_the_profile_path_is_opened_without_the_tunnel(sessions, fixture_ids):
     """The HLS feed is usually reachable directly. Dialling for it would let an
     outage on the RTSP side take the comparison feed down too."""
-    from app.agent.paths import ProfileSourcePath
+    from app.services.paths import ProfileSourcePath
 
     source = await _source_of(sessions, SourceKind.HLS)
     path = ProfileSourcePath(
@@ -435,7 +435,7 @@ async def test_a_source_off_the_profile_path_is_opened_without_the_tunnel(sessio
 
 
 async def test_diagnosis_blames_the_camera_when_nothing_is_listening(sessions, fixture_ids):
-    from app.agent.paths import ProfileSourcePath
+    from app.services.paths import ProfileSourcePath
 
     source = await _source_of(sessions, SourceKind.HLS)
     async with sessions() as db:

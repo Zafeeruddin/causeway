@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.agent.commands import ConnectionCommands
-from app.agent.paths import ProfileSourcePath
 from app.agent.sink import DbSink, payload_for
 from app.config import settings
 from app.db import sessionmaker
@@ -41,6 +40,8 @@ from app.recorder.shipper import ShipResult, discard, ship
 from app.services.commands import CommandBus, command_bus
 from app.services.connections import ConnectionService
 from app.services.events import Event, EventBus, event_bus
+from app.services.paths import ProfileSourcePath
+from app.services.preview import PreviewManager
 from app.storage.client import ObjectStore, StorageError, object_store
 from app.storage.retention import (
     DELETION_NOTICE_DAYS,
@@ -63,6 +64,7 @@ class Agent:
         concurrency: int | None = None,
         runner: Runner | None = None,
         commands: CommandBus | None = None,
+        previews: PreviewManager | None = None,
     ) -> None:
         cfg = settings()
         self.connections = connections
@@ -75,6 +77,7 @@ class Agent:
         self._bus = bus or event_bus()
         self.concurrency = concurrency or cfg.max_streams_per_user * cfg.max_concurrent_users
         self._commands = commands
+        self.previews = previews
         self._running: dict[str, RecordingSession] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._stopping = asyncio.Event()
@@ -106,6 +109,7 @@ class Agent:
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
             asyncio.create_task(self._retention_loop(), name="retention"),
             asyncio.create_task(self._command_loop(), name="commands"),
+            asyncio.create_task(self._preview_loop(), name="previews"),
         ]
         try:
             await self._stopping.wait()
@@ -113,6 +117,8 @@ class Agent:
             for task in loops:
                 task.cancel()
             await asyncio.gather(*loops, return_exceptions=True)
+            if self.previews is not None:
+                await self.previews.stop_all()
             await self._drain()
             log.info("agent.stopped")
 
@@ -143,7 +149,10 @@ class Agent:
         looks from the dashboard like the agent is gone.
         """
         handler = ConnectionCommands(
-            connections=self.connections, sessions=self._sessions, status=self.status
+            connections=self.connections,
+            sessions=self._sessions,
+            status=self.status,
+            previews=self.previews,
         ).handle
         while not self._stopping.is_set():
             try:
@@ -160,7 +169,25 @@ class Agent:
             "netns_available": self.connections.netns.available,
             "recordings": len(self._tasks),
             "capacity": self.concurrency,
+            "previews": self.previews.count if self.previews else 0,
         }
+
+    async def _preview_loop(self) -> None:
+        """Drop previews nobody is watching.
+
+        A preview holds a camera session open, and cameras cap those hard --
+        a tab left open on someone's second monitor is a session a recording
+        cannot have.
+        """
+        if self.previews is None:
+            return
+        interval = settings().preview_reap_seconds
+        while not self._stopping.is_set():
+            await asyncio.sleep(interval)
+            try:
+                await self.previews.reap()
+            except Exception:  # noqa: BLE001
+                log.exception("agent.preview_reap_failed")
 
     # ---- claiming ------------------------------------------------------
 

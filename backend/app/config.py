@@ -63,6 +63,23 @@ class Settings(BaseSettings):
     #: Where recording segments land before they are shipped to S3.
     work_dir: str = "/var/lib/cam/work"
 
+    # ---- live preview ----
+    #: MediaMTX republishes camera streams for the browser. The agent pushes to
+    #: the RTSP address from inside a namespace and manages paths over the API.
+    mediamtx_api_url: str = "http://mediamtx:9997"
+    mediamtx_publish_url: str = "rtsp://mediamtx:8554"
+    #: What the browser dials for WebRTC. Empty means "derive it from the address
+    #: this request arrived on", which is right for a LAN deployment and wrong
+    #: the moment there is a proxy in front -- set it explicitly then.
+    preview_public_base: str = ""
+    #: No viewers for this long and the stream is dropped. Cameras cap concurrent
+    #: sessions hard, so a forgotten tab is a session a recording cannot have.
+    preview_idle_seconds: int = 45
+    preview_max_seconds: int = 3600
+    #: How long to wait for frames to actually reach MediaMTX before giving up.
+    preview_ready_seconds: float = 15.0
+    preview_reap_seconds: int = 10
+
     #: Where connecting actually happens. ``agent`` sends it over the command
     #: bus, which is the only arrangement that works once the API and the agent
     #: are separate containers: network namespaces belong to one of them.
