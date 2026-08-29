@@ -36,6 +36,7 @@ from app.models import Camera, Gap, Recording, Segment, StorageObject
 from app.services.audit import record as audit
 from app.services.playback import build_spans, gap_marks, origin_of, window_seconds
 from app.storage.client import StorageError, object_store
+from app.storage.keys import download_name
 from app.storage.retention import StoragePolicy, admit, estimate_bytes, usage_state
 
 router = APIRouter(prefix="/api", tags=["recordings"])
@@ -186,10 +187,20 @@ async def downloads(
             else "The files for this recording are gone - it may have been cleared by retention.",
         )
 
+    # The camera and the moment, so the file is identifiable once it is out of
+    # here and sitting in a downloads folder next to five others.
+    camera = await db.get(Camera, recording.camera_id)
+    started = recording.started_at or recording.created_at
+
     store = object_store()
     links: list[DownloadLink] = []
     for obj in objects:
-        filename = obj.s3_key.rsplit("/", 1)[-1]
+        filename = download_name(
+            camera.name if camera else "camera",
+            started,
+            SourceKind(obj.source_kind) if obj.source_kind else None,
+            obj.s3_key,
+        )
         try:
             url = await store.presign(obj.s3_key, expires=DOWNLOAD_TTL, filename=filename)
         except StorageError as exc:
