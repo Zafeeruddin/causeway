@@ -381,6 +381,9 @@ class PreviewOut(BaseModel):
     #: it has negotiated, and a codec it cannot decode fails there as a black
     #: frame -- so it is told in advance and can say so instead.
     codec: str = ""
+    #: This view's claim on the stream. Hand it back when closing: the stream is
+    #: shared, and one tab closing must not end another's.
+    viewer: str = ""
 
 
 # ---- comparison --------------------------------------------------------
