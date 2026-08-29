@@ -184,6 +184,7 @@ def _preview_out(info: PreviewInfo) -> PreviewOut:
         expires_at=info.expires_at,
         viewers=info.viewers,
         codec=info.codec,
+        viewer=info.viewer,
     )
 
 
@@ -197,9 +198,10 @@ async def start_preview(
 ) -> PreviewOut:
     """Start watching this camera live.
 
-    The stream is copied, never transcoded, and it stops on its own once nobody
-    is watching -- a preview holds a camera session open, and cameras cap those
-    hard.
+    The stream is copied unless the camera sends a codec no browser decodes, and
+    it stops on its own once nobody is watching -- a preview holds a camera
+    session open, and cameras cap those hard. The response carries a ``viewer``
+    token; hand it back when closing so one view ending does not end another's.
     """
     kind = body.source_kind if body else None
     info = await previewer.start(db, camera, principal.user_id, kind)
@@ -218,19 +220,24 @@ async def start_preview(
 @router.delete("/{camera_id}/preview/{preview_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def stop_preview(
     preview_id: str,
+    viewer: str = "",
     camera: Camera = Depends(load_camera),
     principal: Principal = Depends(current_principal),
     previewer: PreviewGateway = Depends(previews),
 ) -> None:
-    """Stop one of your own previews.
+    """Close one view of a camera.
 
-    Scoped to the caller's own: two people watching one camera share a stream,
-    and closing one tab must not blank the other person's screen.
+    ``viewer`` is the token this view was given when it started, and releasing
+    it ends this view rather than the stream: two people watching one camera
+    share it, and so does one person whose browser has the page open twice.
+    The stream ends when the last view does.
     """
     mine = {info.id for info in await previewer.list(principal.user_id)}
     if preview_id not in mine:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
-    await previewer.stop(preview_id, principal.user_id)
+    # No token means a caller that cannot produce one -- release everything this
+    # person holds rather than nothing at all, and leave other people's alone.
+    await previewer.stop(preview_id, viewer or None, user_id=principal.user_id)
 
 
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)

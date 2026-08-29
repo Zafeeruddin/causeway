@@ -113,11 +113,15 @@ export const api = {
       method: "POST", ...json({ source_kind: sourceKind ?? null }),
     }),
   /**
-   * Scoped to your own view: two people watching one camera share a stream, so
-   * this ends yours and leaves theirs alone.
+   * Scoped to one view by its token: a stream is shared by two people watching
+   * the same camera, and by one person whose browser has the page open twice.
+   * Ending a view without its token would end everyone's.
    */
-  stopPreview: (id: string, previewId: string) =>
-    request<void>(`/api/cameras/${id}/preview/${previewId}`, { method: "DELETE" }),
+  stopPreview: (id: string, previewId: string, viewer: string) =>
+    request<void>(
+      `/api/cameras/${id}/preview/${previewId}?viewer=${encodeURIComponent(viewer)}`,
+      { method: "DELETE" },
+    ),
 
   // recordings
   recordings: () => request<Recording[]>("/api/recordings"),

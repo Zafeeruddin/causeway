@@ -57,7 +57,9 @@ export function LivePreview({
     attempt.session = null;
     const started = attempt.preview;
     attempt.preview = null;
-    if (started) void api.stopPreview(started.camera_id, started.id).catch(() => {});
+    if (started) {
+      void api.stopPreview(started.camera_id, started.id, started.viewer).catch(() => {});
+    }
   }, []);
 
   /** An ending is not a failure, and must not overwrite the server's refusal. */
@@ -77,7 +79,7 @@ export function LivePreview({
         if (attempt.abandoned) {
           // Cleanup ran while the request was in flight, so it had nothing to
           // stop. Hand the stream back here instead of leaking it.
-          void api.stopPreview(started.camera_id, started.id).catch(() => {});
+          void api.stopPreview(started.camera_id, started.id, started.viewer).catch(() => {});
           return;
         }
         attempt.preview = started;
@@ -88,7 +90,7 @@ export function LivePreview({
           // WebRTC's own answer to this is to negotiate, agree on nothing, and
           // hand back a session that stays black. Asking the browser first is
           // the difference between a reason and a blank rectangle.
-          void api.stopPreview(started.camera_id, started.id).catch(() => {});
+          void api.stopPreview(started.camera_id, started.id, started.viewer).catch(() => {});
           attempt.preview = null;
           setView({ phase: "failed", message: undecodable });
           return;

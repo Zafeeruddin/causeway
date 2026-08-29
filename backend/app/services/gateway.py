@@ -190,8 +190,12 @@ class RemotePreview:
         )
         return preview_from_payload(payload)
 
-    async def stop(self, preview_id: str, user_id: str | None = None) -> None:
-        await self._bus.call("preview.stop", {"preview_id": preview_id, "user_id": user_id})
+    async def stop(
+        self, preview_id: str, viewer: str | None = None, *, user_id: str | None = None
+    ) -> None:
+        await self._bus.call(
+            "preview.stop", {"preview_id": preview_id, "viewer": viewer, "user_id": user_id}
+        )
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]:
         payload = await self._bus.call("preview.list", {"user_id": user_id})
@@ -208,6 +212,7 @@ def preview_payload(info: PreviewInfo) -> dict[str, Any]:
         "expires_at": info.expires_at.isoformat(),
         "viewers": info.viewers,
         "codec": info.codec,
+        "viewer": info.viewer,
     }
 
 
@@ -221,6 +226,7 @@ def preview_from_payload(payload: dict[str, Any]) -> PreviewInfo:
         expires_at=datetime.fromisoformat(payload["expires_at"]),
         viewers=payload.get("viewers", 0),
         codec=payload.get("codec", ""),
+        viewer=payload.get("viewer", ""),
     )
 
 

@@ -311,15 +311,57 @@ async def test_one_viewer_leaving_does_not_blank_the_other(sessions, camera, pub
     previews = build(sessions, ScriptedPath(), mtx)
 
     async with sessions() as db:
-        info = await previews.start(db, camera, "user-1")
-        await previews.start(db, camera, "user-2")
+        first = await previews.start(db, camera, "user-1")
+        second = await previews.start(db, camera, "user-2")
 
-    await previews.stop(info.id, "user-1")
+    assert first.id == second.id, "one camera, one stream"
+    assert first.viewer != second.viewer, "two views, two claims"
+
+    await previews.stop(first.id, first.viewer)
     assert previews.count == 1, "the other viewer's stream was torn down"
 
-    await previews.stop(info.id, "user-2")
+    await previews.stop(second.id, second.viewer)
     assert previews.count == 0
-    assert info.path in mtx.removed
+    assert first.path in mtx.removed
+
+
+async def test_one_browsers_two_mounts_do_not_cancel_each_other(sessions, camera, publishable):
+    """React mounts a component twice and the first mount's teardown lands after
+    the second has connected. Both are the same person, so a claim keyed by user
+    makes them one -- the first teardown ends the stream the second is watching,
+    and the picture appears, blanks, and reports a dropped connection."""
+    mtx = FakeMediaMtx()
+    previews = build(sessions, ScriptedPath(), mtx)
+
+    async with sessions() as db:
+        first = await previews.start(db, camera, "user-1")
+        second = await previews.start(db, camera, "user-1")
+
+    assert first.viewer != second.viewer
+
+    await previews.stop(first.id, first.viewer)
+    assert previews.count == 1, "the surviving mount's stream was torn down"
+    assert first.path not in mtx.removed
+
+    await previews.stop(second.id, second.viewer)
+    assert previews.count == 0
+
+
+async def test_a_stop_without_a_token_still_ends_that_persons_view(sessions, camera, publishable):
+    """A caller that cannot produce a token must not be silently ignored -- it
+    gives up everything that person holds, and nothing anyone else does."""
+    previews = build(sessions, ScriptedPath(), FakeMediaMtx())
+    async with sessions() as db:
+        mine = await previews.start(db, camera, "user-1")
+        await previews.start(db, camera, "user-2")
+
+    await previews.stop(mine.id, None, user_id="user-1")
+
+    assert previews.count == 1, "the other person's view went with it"
+    assert await previews.list("user-1") == []
+
+    await previews.stop(mine.id, None, user_id="user-2")
+    assert previews.count == 0
 
 
 async def test_a_browser_that_has_already_reconnected_keeps_its_stream(

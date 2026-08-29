@@ -25,7 +25,7 @@ import secrets
 import socket
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -69,15 +69,24 @@ class PreviewInfo:
     #: "H265"). The browser needs this before it negotiates: a codec it cannot
     #: decode fails inside WebRTC, where the only symptom is a black frame.
     codec: str = ""
+    #: This caller's claim on the stream, minted per ``start`` and consumed by
+    #: the matching ``stop``. Everything else here describes the shared stream;
+    #: this one field differs between two people watching it, which is what
+    #: makes one of them leaving distinguishable from both of them leaving.
+    viewer: str = ""
 
 
 @dataclass
 class _Live:
     info: PreviewInfo
     team_id: str
-    #: Everyone who asked for this stream. One camera session serves all of
-    #: them, so it outlives any single viewer leaving.
-    watchers: set[str]
+    #: Live claims on this stream, as ``viewer token -> user id``. Keyed by the
+    #: call rather than by the person: one person's browser can hold two at
+    #: once -- React mounts a component twice and the first mount's teardown
+    #: lands after the second has connected -- and keying by user makes those
+    #: two indistinguishable, so the first teardown takes the second's picture
+    #: with it. One camera session still serves all of them.
+    watchers: dict[str, str]
     process: asyncio.subprocess.Process
     stderr: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_LINES))
     #: Last time anyone was watching. Starts now, so a preview gets its grace
@@ -90,7 +99,9 @@ class PreviewGateway(Protocol):
         self, db: AsyncSession, camera: Camera, user_id: str, kind: SourceKind | None
     ) -> PreviewInfo: ...
 
-    async def stop(self, preview_id: str, user_id: str | None = None) -> None: ...
+    async def stop(
+        self, preview_id: str, viewer: str | None = None, *, user_id: str | None = None
+    ) -> None: ...
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]: ...
 
@@ -147,8 +158,7 @@ class PreviewManager:
             # Two people watching one camera share one stream. The camera only
             # ever sees a single session, which is the whole reason MediaMTX is
             # in the middle.
-            existing.watchers.add(user_id)
-            return existing.info
+            return self._joined(existing, user_id)
 
         # A stream is only in _live once it is ready, which takes seconds, so
         # two starts arriving inside that window both find nothing and both
@@ -162,9 +172,7 @@ class PreviewManager:
             # other one is still waiting on.
             info = await asyncio.shield(inflight)
             live = self._live.get(info.id)
-            if live is not None:
-                live.watchers.add(user_id)
-            return info
+            return self._joined(live, user_id) if live is not None else info
 
         task = asyncio.ensure_future(self._start_one(camera, source, user_id))
         self._starting[key] = task
@@ -206,7 +214,7 @@ class PreviewManager:
                 expires_at=started + timedelta(seconds=cfg.preview_max_seconds),
             ),
             team_id=camera.team_id,
-            watchers={user_id},
+            watchers={},
             process=process,
         )
         asyncio.create_task(_drain(process, live.stderr))
@@ -218,6 +226,7 @@ class PreviewManager:
             raise
 
         self._live[live.info.id] = live
+        claimed = self._joined(live, user_id)
         log.info(
             "preview.started",
             camera=camera.id,
@@ -225,7 +234,19 @@ class PreviewManager:
             kind=source.kind,
             via=opened.runner.name,
         )
-        return live.info
+        return claimed
+
+    def _joined(self, live: _Live, user_id: str) -> PreviewInfo:
+        """Hand this caller its own claim on a stream it now shares.
+
+        The returned info is a copy: the id, path and codec are the stream's and
+        identical for everyone, but ``viewer`` belongs to this call alone. That
+        is what a later stop consumes, and it is the difference between "one of
+        the two tabs closed" and "nobody is watching any more".
+        """
+        token = secrets.token_urlsafe(8)
+        live.watchers[token] = user_id
+        return replace(live.info, viewer=token)
 
     async def _await_ready(self, name: str, live: _Live) -> None:
         """Wait for frames to actually arrive at MediaMTX.
@@ -253,29 +274,38 @@ class PreviewManager:
 
     # ---- stopping ------------------------------------------------------
 
-    async def stop(self, preview_id: str, user_id: str | None = None) -> None:
-        """Stop watching. The stream goes only when nobody is left on it.
+    async def stop(
+        self, preview_id: str, viewer: str | None = None, *, user_id: str | None = None
+    ) -> None:
+        """Give up a claim on a stream. It ends when the last one goes.
 
-        Two things share a stream and neither is visible from here: a second
-        person watching the same camera, and the same person's browser
-        reconnecting -- React remounts a component twice in development, and the
-        first mount's teardown arrives after the second has already connected.
-        Tearing down on the first stop blanks both.
+        Three ways to ask, narrowest first:
 
-        So the last watcher leaving is a question for MediaMTX, which knows who
-        is actually reading. If it says someone still is, this leaves the stream
-        alone and the reaper collects it once that stops being true.
+        * ``viewer`` -- the token ``start`` handed this caller. Releases that one
+          view. One browser can hold two views of the same camera at once, and
+          the second has to survive the first ending, which is the whole reason
+          a token exists.
+        * ``user_id`` -- every claim this person holds, for a caller that has no
+          token to hand back. Their other tabs go; nobody else's does.
+        * neither -- the stream, outright. Shutdown and the reaper mean this.
+
+        Even with no claims left someone can still be reading: a claim released
+        while its WebRTC session was mid-negotiation, or a viewer that never
+        asked us at all. MediaMTX knows, so it is asked, and if it says yes the
+        reaper collects the stream later instead of this blanking a live screen.
         """
         live = self._live.get(preview_id)
         if live is None:
             return
-        if user_id is not None:
-            live.watchers.discard(user_id)
+        if viewer is not None or user_id is not None:
+            if viewer is not None:
+                live.watchers.pop(viewer, None)
+            else:
+                for token in [t for t, owner in live.watchers.items() if owner == user_id]:
+                    live.watchers.pop(token, None)
             if live.watchers:
                 return
             if await self._still_being_read(live):
-                # Someone is on it who never asked us for it, or the same
-                # browser has already reconnected. Let the reaper decide.
                 live.last_viewer_at = datetime.now(UTC)
                 return
         self._live.pop(preview_id, None)
@@ -357,7 +387,9 @@ class PreviewManager:
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]:
         return [
-            live.info for live in self._live.values() if user_id is None or user_id in live.watchers
+            live.info
+            for live in self._live.values()
+            if user_id is None or user_id in live.watchers.values()
         ]
 
     def _existing(self, camera_id: str, kind: SourceKind) -> _Live | None:
@@ -390,7 +422,7 @@ class PreviewManager:
 
     def _check_caps(self, user_id: str, camera_id: str, source: CameraSource) -> None:
         cfg = settings()
-        mine = [live for live in self._live.values() if user_id in live.watchers]
+        mine = [live for live in self._live.values() if user_id in live.watchers.values()]
         if any(
             live.info.camera_id == camera_id and live.info.source_kind is SourceKind(source.kind)
             for live in mine
@@ -401,7 +433,7 @@ class PreviewManager:
                 f"You are already previewing {cfg.max_streams_per_user} cameras. "
                 "Close one to open another."
             )
-        everyone = {watcher for live in self._live.values() for watcher in live.watchers}
+        everyone = {user for live in self._live.values() for user in live.watchers.values()}
         if len(everyone | {user_id}) > cfg.max_concurrent_users:
             raise PreviewError(
                 f"{cfg.max_concurrent_users} people are already watching live streams. "

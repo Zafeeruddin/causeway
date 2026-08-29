@@ -62,6 +62,8 @@ export interface Preview {
   viewers: number;
   /** What the camera is sending, as MediaMTX names it: "H264", "H265". */
   codec: string;
+  /** This view's claim on the stream. Hand it back when closing. */
+  viewer: string;
 }
 
 export interface ImportIssue { line: number; value: string; reason: string }
