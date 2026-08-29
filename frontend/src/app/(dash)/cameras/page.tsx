@@ -8,7 +8,7 @@ import { GateLadder } from "@/components/GateLadder";
 import { LivePreview } from "@/components/LivePreview";
 import {
   Badge, Banner, Button, Card, CardHeader, Dot, Empty, Eyebrow, Field,
-  Input, Modal, Select, Textarea, type Tone,
+  Input, Modal, PasswordInput, Select, Textarea, type Tone,
 } from "@/components/ui";
 
 type AddMode = "single" | "paste" | "csv";
@@ -282,6 +282,33 @@ function cameraTone(sources: Source[]): Tone {
 
 /* ---- adding ---- */
 
+/**
+ * Credentials an NVR baked into the URL it exported.
+ *
+ * The server strips these out and seals them whether or not we look, so
+ * reading them here changes nothing about what is stored -- it changes whether
+ * the person can see that it happened. Percent-decoded, because that is the
+ * form the camera is actually sent: a password typed as `CTC2.5++` is exported
+ * as `CTC2.5%2B%2B`, and showing the encoded form invites someone to "correct"
+ * it into a password that has never existed.
+ */
+function credentialsInUrl(url: string): { username: string; password: string } | null {
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/@\s]+)@/i.exec(url.trim());
+  if (!authority) return null;
+  const [user, ...rest] = authority[1]!.split(":");
+  if (!user) return null;
+  return { username: decode(user), password: decode(rest.join(":")) };
+}
+
+function decode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // A stray % that is not an escape. Better the literal text than nothing.
+    return value;
+  }
+}
+
 function AddCamerasModal({
   open, teams, profiles, onClose, onDone,
 }: {
@@ -311,6 +338,12 @@ function AddCamerasModal({
     [profiles, teamId],
   );
 
+  // Derived rather than written into the fields: a URL edited back to a plain
+  // one has to give the person their own typing back, not the NVR's.
+  const fromUrl = useMemo(() => credentialsInUrl(rtsp), [rtsp]);
+  const shownUsername = fromUrl ? fromUrl.username : username;
+  const shownPassword = fromUrl ? fromUrl.password : password;
+
   useEffect(() => {
     if (teams[0] && !teamId) setTeamId(teams[0]!.id);
   }, [teams, teamId]);
@@ -330,7 +363,16 @@ function AddCamerasModal({
           profile_id: profileId,
           name,
           sources: [
-            ...(rtsp ? [{ kind: "rtsp" as const, url: rtsp, username, password }] : []),
+            ...(rtsp
+              ? [
+                  {
+                    kind: "rtsp" as const,
+                    url: rtsp,
+                    username: shownUsername,
+                    password: shownPassword,
+                  },
+                ]
+              : []),
             ...(hls ? [{ kind: "hls" as const, url: hls }] : []),
           ],
         });
@@ -415,14 +457,35 @@ function AddCamerasModal({
               />
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Username" hint="Optional if the URL already carries one.">
-                <Input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
-              </Field>
-              <Field label="Password" hint="Sealed on save; never shown again.">
+              <Field
+                label="Username"
+                hint={
+                  fromUrl
+                    ? "Read out of the URL above. Edit the URL to change it."
+                    : "Optional if the URL already carries one."
+                }
+              >
                 <Input
-                  type="password"
-                  value={password}
+                  value={shownUsername}
+                  onChange={(e) => setUsername(e.target.value)}
+                  readOnly={!!fromUrl}
+                  className={fromUrl ? "cursor-not-allowed text-fg-2" : undefined}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field
+                label="Password"
+                hint={
+                  fromUrl
+                    ? "Read out of the URL above. Stripped out of it and sealed on save."
+                    : "Sealed on save; never shown again."
+                }
+              >
+                <PasswordInput
+                  value={shownPassword}
                   onChange={(e) => setPassword(e.target.value)}
+                  readOnly={!!fromUrl}
+                  className={fromUrl ? "cursor-not-allowed text-fg-2" : undefined}
                   autoComplete="new-password"
                 />
               </Field>

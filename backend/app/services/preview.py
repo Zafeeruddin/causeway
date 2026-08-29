@@ -62,6 +62,10 @@ class PreviewInfo:
     started_at: datetime
     expires_at: datetime
     viewers: int = 0
+    #: What the camera is actually sending, as MediaMTX names it ("H264",
+    #: "H265"). The browser needs this before it negotiates: a codec it cannot
+    #: decode fails inside WebRTC, where the only symptom is a black frame.
+    codec: str = ""
 
 
 @dataclass
@@ -113,6 +117,9 @@ class PreviewManager:
         # that is not "profile with a tunnel" plugs in without touching this.
         self._path_factory = path_factory or self._profile_path
         self._live: dict[str, _Live] = {}
+        #: Starts that have not finished yet, so a second request for the same
+        #: camera joins one rather than racing it.
+        self._starting: dict[tuple[str, SourceKind], asyncio.Future[PreviewInfo]] = {}
 
     def _profile_path(self, camera: Camera, source: CameraSource) -> SourcePath:
         return ProfileSourcePath(
@@ -128,9 +135,9 @@ class PreviewManager:
     async def start(
         self, db: AsyncSession, camera: Camera, user_id: str, kind: SourceKind | None = None
     ) -> PreviewInfo:
-        cfg = settings()
         source = self._pick_source(camera, kind)
         self._check_caps(user_id, camera.id, source)
+        key = (camera.id, SourceKind(source.kind))
 
         existing = self._existing(camera.id, SourceKind(source.kind))
         if existing is not None:
@@ -140,6 +147,31 @@ class PreviewManager:
             existing.watchers.add(user_id)
             return existing.info
 
+        # A stream is only in _live once it is ready, which takes seconds, so
+        # two starts arriving inside that window both find nothing and both
+        # build one. They then contend for the same tunnel: the first to be
+        # stopped releases the port lease, and the second loses its input and
+        # times out as "the camera did not start sending video". React mounting
+        # a component twice is enough to produce it.
+        inflight = self._starting.get(key)
+        if inflight is not None:
+            # Shielded: this caller giving up must not cancel the start the
+            # other one is still waiting on.
+            info = await asyncio.shield(inflight)
+            live = self._live.get(info.id)
+            if live is not None:
+                live.watchers.add(user_id)
+            return info
+
+        task = asyncio.ensure_future(self._start_one(camera, source, user_id))
+        self._starting[key] = task
+        try:
+            return await task
+        finally:
+            self._starting.pop(key, None)
+
+    async def _start_one(self, camera: Camera, source: CameraSource, user_id: str) -> PreviewInfo:
+        cfg = settings()
         path = self._path_factory(camera, source)
         try:
             opened = await path.open()
