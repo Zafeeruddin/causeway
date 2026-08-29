@@ -129,14 +129,17 @@ async def ship(
         key = source_key(
             team_slug, report.recording_id, report.started_at, capture.source_kind, SESSION_FILE
         )
-        shipped = await _upload(store, path, key, capture.source_kind)
+        shipped, failure = await _upload(store, path, key, capture.source_kind)
         if shipped is None:
-            result.failures.append(f"{capture.source_kind.value}: upload failed")
+            # The storage layer's own words. "upload failed" tells the person
+            # reading it nothing they can act on; "the recording store could not
+            # be reached" tells them where to look.
+            result.failures.append(f"{capture.source_kind.value}: {failure}")
             continue
         result.objects.append(shipped)
 
     sidecar = await _write_sidecar(report, requested_seconds)
-    shipped = await _upload(
+    shipped, _ = await _upload(
         store,
         sidecar,
         sidecar_key(team_slug, report.recording_id, report.started_at, GAPS_FILE),
@@ -190,16 +193,17 @@ async def _write_sidecar(report: SessionReport, requested_seconds: int) -> Path:
 
 async def _upload(
     store: ObjectStore, path: Path, key: str, kind: SourceKind | None
-) -> ShippedObject | None:
+) -> tuple[ShippedObject | None, str]:
+    """Upload one file. Returns what landed, or why it did not."""
     try:
         stored = await store.put_file(path, key)
     except StorageError as exc:
         log.error("ship.upload_failed", key=key, error=str(exc))
-        return None
+        return None, exc.user_message
     log.info("ship.uploaded", key=key, bytes=stored.bytes)
     return ShippedObject(
         key=stored.key,
         bytes=stored.bytes,
         content_type=stored.content_type or content_type_for(path.name),
         source_kind=kind,
-    )
+    ), ""

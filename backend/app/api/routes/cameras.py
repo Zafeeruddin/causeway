@@ -229,7 +229,7 @@ async def stop_preview(
     mine = {info.id for info in await previewer.list(principal.user_id)}
     if preview_id not in mine:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
-    await previewer.stop(preview_id)
+    await previewer.stop(preview_id, principal.user_id)
 
 
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)

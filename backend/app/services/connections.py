@@ -147,6 +147,10 @@ class ConnectionService:
         if profile.id not in self._runners:
             namespace = await self.netns.ensure(profile.id)
             self._runners[profile.id] = namespace.runner
+        # Outside the cache: the gateway is profile data and can be edited, and
+        # a namespace that outlived an agent restart has the route without us
+        # knowing it. allow_host is a no-op once the address is already in.
+        await self.netns.allow_host(profile.id, profile.vpn_gateway)
         return self._runners[profile.id]
 
     def driver_for_profile(self, profile: ConnectionProfile, runner: Runner) -> VpnDriver:
@@ -163,6 +167,11 @@ class ConnectionService:
         try:
             runner = await self.runner_for(profile)
         except NetnsUnavailable as exc:
+            # Before the first rung, so there is no gate to hang this on and the
+            # ladder shows eight "waiting" rows. Without this line the agent log
+            # says only that a connect arrived, and the reason lives in a column
+            # nobody thinks to read.
+            log.error("connect.setup_failed", profile=profile.id, reason=str(exc))
             await self._set_state(db, profile, ProfileState.FAILED, str(exc))
             return ConnectOutcome(attempt_id, [], ProfileState.FAILED)
 

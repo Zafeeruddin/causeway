@@ -212,6 +212,57 @@ async def test_a_stream_that_never_arrives_leaves_nothing_behind(sessions, camer
     assert process.terminated or process.returncode is not None
 
 
+async def test_one_viewer_leaving_does_not_blank_the_other(sessions, camera, publishable):
+    """A shared stream outlives any single viewer. Tearing it down on the first
+    stop is what makes the second person's picture go black for no reason they
+    can see."""
+    mtx = FakeMediaMtx()
+    previews = build(sessions, ScriptedPath(), mtx)
+
+    async with sessions() as db:
+        info = await previews.start(db, camera, "user-1")
+        await previews.start(db, camera, "user-2")
+
+    await previews.stop(info.id, "user-1")
+    assert previews.count == 1, "the other viewer's stream was torn down"
+
+    await previews.stop(info.id, "user-2")
+    assert previews.count == 0
+    assert info.path in mtx.removed
+
+
+async def test_a_browser_that_has_already_reconnected_keeps_its_stream(
+    sessions, camera, publishable
+):
+    """React remounts a component twice in development, and the first mount's
+    teardown lands after the second has connected. MediaMTX knows someone is
+    reading even when our own bookkeeping says the last watcher left."""
+    mtx = FakeMediaMtx()
+    previews = build(sessions, ScriptedPath(), mtx)
+
+    async with sessions() as db:
+        info = await previews.start(db, camera, "user-1")
+    mtx.paths[info.path] = 1  # the remounted player is already pulling frames
+
+    await previews.stop(info.id, "user-1")
+
+    assert previews.count == 1
+    assert info.path not in mtx.removed
+
+
+async def test_stopping_without_a_user_stops_it_outright(sessions, camera, publishable):
+    """Shutdown and the reaper are not viewers leaving; they end the stream."""
+    mtx = FakeMediaMtx()
+    previews = build(sessions, ScriptedPath(), mtx)
+    async with sessions() as db:
+        info = await previews.start(db, camera, "user-1")
+    mtx.paths[info.path] = 3
+
+    await previews.stop(info.id)
+
+    assert previews.count == 0
+
+
 # ---- limits -------------------------------------------------------------
 
 

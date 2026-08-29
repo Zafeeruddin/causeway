@@ -274,6 +274,31 @@ async def test_a_failed_upload_keeps_the_segments(sessions, fixture_ids, tmp_pat
     assert work_dir.exists()
 
 
+async def test_a_crash_while_finishing_fails_the_recording_rather_than_stranding_it(
+    sessions, fixture_ids, tmp_path, monkeypatch
+):
+    """Nothing awaits the recording task, so an exception escaping finalize is
+    one nobody ever sees: the row keeps saying FINALIZING with no reason on it,
+    and the dashboard shows a spinner that never stops."""
+    agent = build_agent(sessions, store=FakeStore())
+
+    async def a_plan_with_nothing_to_record(_recording_id: str) -> _Plan:
+        return _Plan(team_id=fixture_ids["team"], team_slug="acme", requested_seconds=1, paths=[])
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("the gateway refused in a way we did not expect")
+
+    monkeypatch.setattr(agent, "_plan", a_plan_with_nothing_to_record)
+    monkeypatch.setattr(agent, "finalize", boom)
+
+    await agent._run_recording(fixture_ids["recording"])
+
+    async with sessions() as db:
+        recording = await db.get(Recording, fixture_ids["recording"])
+    assert recording.state == RecordingState.FAILED
+    assert "did not expect" in recording.failure_reason
+
+
 async def test_a_session_that_captured_nothing_fails_with_the_reason(
     sessions, fixture_ids, tmp_path
 ):

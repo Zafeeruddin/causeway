@@ -68,7 +68,9 @@ class PreviewInfo:
 class _Live:
     info: PreviewInfo
     team_id: str
-    user_id: str
+    #: Everyone who asked for this stream. One camera session serves all of
+    #: them, so it outlives any single viewer leaving.
+    watchers: set[str]
     process: asyncio.subprocess.Process
     stderr: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_LINES))
     #: Last time anyone was watching. Starts now, so a preview gets its grace
@@ -81,7 +83,7 @@ class PreviewGateway(Protocol):
         self, db: AsyncSession, camera: Camera, user_id: str, kind: SourceKind | None
     ) -> PreviewInfo: ...
 
-    async def stop(self, preview_id: str) -> None: ...
+    async def stop(self, preview_id: str, user_id: str | None = None) -> None: ...
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]: ...
 
@@ -135,6 +137,7 @@ class PreviewManager:
             # Two people watching one camera share one stream. The camera only
             # ever sees a single session, which is the whole reason MediaMTX is
             # in the middle.
+            existing.watchers.add(user_id)
             return existing.info
 
         path = self._path_factory(camera, source)
@@ -164,7 +167,7 @@ class PreviewManager:
                 expires_at=started + timedelta(seconds=cfg.preview_max_seconds),
             ),
             team_id=camera.team_id,
-            user_id=user_id,
+            watchers={user_id},
             process=process,
         )
         asyncio.create_task(_drain(process, live.stderr))
@@ -207,12 +210,42 @@ class PreviewManager:
 
     # ---- stopping ------------------------------------------------------
 
-    async def stop(self, preview_id: str) -> None:
-        live = self._live.pop(preview_id, None)
+    async def stop(self, preview_id: str, user_id: str | None = None) -> None:
+        """Stop watching. The stream goes only when nobody is left on it.
+
+        Two things share a stream and neither is visible from here: a second
+        person watching the same camera, and the same person's browser
+        reconnecting -- React remounts a component twice in development, and the
+        first mount's teardown arrives after the second has already connected.
+        Tearing down on the first stop blanks both.
+
+        So the last watcher leaving is a question for MediaMTX, which knows who
+        is actually reading. If it says someone still is, this leaves the stream
+        alone and the reaper collects it once that stops being true.
+        """
+        live = self._live.get(preview_id)
         if live is None:
             return
+        if user_id is not None:
+            live.watchers.discard(user_id)
+            if live.watchers:
+                return
+            if await self._still_being_read(live):
+                # Someone is on it who never asked us for it, or the same
+                # browser has already reconnected. Let the reaper decide.
+                live.last_viewer_at = datetime.now(UTC)
+                return
+        self._live.pop(preview_id, None)
         await self._tear_down(live)
         log.info("preview.stopped", path=live.info.path, camera=live.info.camera_id)
+
+    async def _still_being_read(self, live: _Live) -> bool:
+        try:
+            state = await self.mediamtx.state(live.info.path)
+        except MediaMtxError:
+            # No answer is not evidence that nobody is watching.
+            return True
+        return bool(state and state.readers)
 
     async def stop_all(self) -> None:
         for preview_id in list(self._live):
@@ -281,7 +314,7 @@ class PreviewManager:
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]:
         return [
-            live.info for live in self._live.values() if user_id is None or live.user_id == user_id
+            live.info for live in self._live.values() if user_id is None or user_id in live.watchers
         ]
 
     def _existing(self, camera_id: str, kind: SourceKind) -> _Live | None:
@@ -314,7 +347,7 @@ class PreviewManager:
 
     def _check_caps(self, user_id: str, camera_id: str, source: CameraSource) -> None:
         cfg = settings()
-        mine = [live for live in self._live.values() if live.user_id == user_id]
+        mine = [live for live in self._live.values() if user_id in live.watchers]
         if any(
             live.info.camera_id == camera_id and live.info.source_kind is SourceKind(source.kind)
             for live in mine
@@ -325,8 +358,8 @@ class PreviewManager:
                 f"You are already previewing {cfg.max_streams_per_user} cameras. "
                 "Close one to open another."
             )
-        watchers = {live.user_id for live in self._live.values()} | {user_id}
-        if len(watchers) > cfg.max_concurrent_users:
+        everyone = {watcher for live in self._live.values() for watcher in live.watchers}
+        if len(everyone | {user_id}) > cfg.max_concurrent_users:
             raise PreviewError(
                 f"{cfg.max_concurrent_users} people are already watching live streams. "
                 "This is a limit of the camera network, not of the dashboard."

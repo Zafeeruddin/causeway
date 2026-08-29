@@ -3,12 +3,14 @@ produces a system that looks connected and carries nothing."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.enums import SshAuth
 from app.net.netns import NetnsManager, NetnsUnavailable
 from app.net.ports import NoPortsAvailable, PortPool
-from app.net.runner import LocalRunner, NetnsRunner, ProcResult
+from app.net.runner import CommandFailed, LocalRunner, NetnsRunner, ProcResult
 from app.net.ssh import JumpHost, SshAuthFailed, TunnelManager
 from tests.conftest import FakeRunner
 
@@ -81,6 +83,147 @@ async def test_a_namespace_without_privileges_refuses_rather_than_degrading(monk
     monkeypatch.setattr("os.geteuid", lambda: 1000)
     with pytest.raises(NetnsUnavailable, match="CAP_NET_ADMIN"):
         await NetnsManager(runner=FakeRunner()).ensure("abc")
+
+
+async def test_the_vpn_gateway_gets_a_route_out_but_nothing_else_does(monkeypatch):
+    """The namespace has no default route on purpose, and the VPN client still
+    has to reach its gateway to build the tunnel that supplies one. Without this
+    the dial fails "connect: Network is unreachable", which reads like the
+    gateway is down rather than unrouted."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    #: iptables -C exits non-zero when the rule is not there yet.
+    runner = FakeRunner(results={"nat -C": ProcResult(1, "", "")})
+    manager = NetnsManager(
+        prefix="cam", control_cidrs="172.16.0.0/12", runner=runner, inside_runner=lambda _: runner
+    )
+    await manager.ensure("abcdef12-3456")
+    runner.calls.clear()
+
+    assert await manager.allow_host("abcdef12-3456", "82.197.58.159") == ["82.197.58.159"]
+
+    flat = [" ".join(c) for c in runner.calls]
+    assert any("route replace 82.197.58.159/32 via" in c for c in flat)
+    assert any(
+        "iptables -t nat -A POSTROUTING" in c and "-d 82.197.58.159/32" in c for c in flat
+    ), "the gateway needs NAT as well as a route"
+    assert not any("route" in c and "default" in c for c in flat), "never a default route"
+
+
+async def test_a_gateway_already_routed_is_not_routed_twice(monkeypatch):
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = FakeRunner(results={"nat -C": ProcResult(1, "", "")})
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+    await manager.ensure("abcdef12-3456")
+    await manager.allow_host("abcdef12-3456", "82.197.58.159")
+    runner.calls.clear()
+
+    await manager.allow_host("abcdef12-3456", "82.197.58.159")
+
+    assert runner.calls == []
+
+
+async def test_a_gateway_that_does_not_resolve_says_so(monkeypatch):
+    """A named gateway can only be resolved out here -- the namespace has no
+    DNS, which is the point of it."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = FakeRunner()
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+    await manager.ensure("abcdef12-3456")
+
+    async def cannot_resolve(*_args, **_kwargs):
+        raise OSError("Name or service not known")
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", cannot_resolve)
+    with pytest.raises(NetnsUnavailable, match="could not be resolved"):
+        await manager.allow_host("abcdef12-3456", "vpn.example.invalid")
+
+
+class RefusingRunner(FakeRunner):
+    """A container that is root and still cannot mount."""
+
+    def __init__(self, stderr: str) -> None:
+        super().__init__()
+        self.stderr = stderr
+
+    async def run(self, argv, *, timeout=30.0, stdin=None, env=None, check=False):
+        await super().run(argv, timeout=timeout, stdin=stdin, env=env, check=check)
+        if "netns add" in " ".join(argv):
+            raise CommandFailed(argv, ProcResult(1, "", self.stderr))
+        return self.default
+
+
+async def test_a_refused_mount_says_what_is_missing_rather_than_that_a_command_failed(monkeypatch):
+    """`ip netns add` mounts, and the two ways that is refused read alike.
+    Surfaced as CommandFailed they tell the person nothing they can act on."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = RefusingRunner("mount --make-shared /run/netns failed: Operation not permitted")
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+
+    with pytest.raises(NetnsUnavailable) as caught:
+        await manager.ensure("abcdef12-3456")
+
+    assert "mount --make-shared" in str(caught.value)
+    assert "SYS_ADMIN" in str(caught.value)
+
+
+async def test_a_container_that_has_been_refused_stops_claiming_it_can(monkeypatch):
+    """Root in a container is a guess, and health reports it as a fact. Once the
+    kernel has said no, the guess has been settled and must not come back."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    runner = RefusingRunner("mount --make-shared /run/netns failed: Permission denied")
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+    assert manager.available
+
+    with pytest.raises(NetnsUnavailable):
+        await manager.ensure("abcdef12-3456")
+
+    assert not manager.available
+    # And the second attempt repeats the reason rather than the generic hint.
+    with pytest.raises(NetnsUnavailable, match="Permission denied"):
+        await manager.ensure("beefcafe-0000")
+
+
+class ReadOnlySysctlRunner(FakeRunner):
+    """A container with /proc/sys mounted read-only, which is every container."""
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self.current = current
+
+    async def run(self, argv, *, timeout=30.0, stdin=None, env=None, check=False):
+        await super().run(argv, timeout=timeout, stdin=stdin, env=env, check=check)
+        joined = " ".join(argv)
+        if "sysctl -w" in joined:
+            raise CommandFailed(
+                argv, ProcResult(1, "", 'sysctl: permission denied on key "net.ipv4.ip_forward"')
+            )
+        if "sysctl -n" in joined:
+            return ProcResult(0, self.current, "")
+        return self.default
+
+
+async def test_forwarding_already_on_is_not_a_failure(monkeypatch):
+    """compose sets ip_forward at container creation, which is the only way a
+    container can set it at all. Insisting on writing it ourselves fails on
+    exactly the deployments that had it right."""
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = ReadOnlySysctlRunner("1\n")
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+
+    ns = await manager.ensure("abcdef12-3456")
+
+    assert ns.name == "cam-abcdef12"
+    assert any("iptables" in " ".join(c) for c in runner.calls), "NAT should still be applied"
+
+
+async def test_forwarding_that_is_off_and_unwritable_says_where_to_set_it(monkeypatch):
+    monkeypatch.setenv("CAM_FORCE_NETNS", "1")
+    runner = ReadOnlySysctlRunner("0\n")
+    manager = NetnsManager(prefix="cam", runner=runner, inside_runner=lambda _: runner)
+
+    with pytest.raises(NetnsUnavailable, match="ip_forward"):
+        await manager.ensure("abcdef12-3456")
 
 
 #: Make the fake report "no master yet", so open_master actually dials.

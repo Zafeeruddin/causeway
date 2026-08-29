@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.enums import (
     GateStatus,
@@ -87,6 +87,30 @@ class MembershipRequest(BaseModel):
 # ---- connection profiles -----------------------------------------------
 
 
+def split_gateway(value: str) -> tuple[str, int | None]:
+    """Separate a pasted ``host:port`` into the two fields we store.
+
+    FortiClient labels the field "Remote Gateway" and displays it as
+    ``82.197.58.159:20443``, so that whole string is what people paste. Stored
+    verbatim it is not a hostname, and the failure surfaces two layers away as
+    "Name or service not known" -- a DNS error for something nobody was trying
+    to resolve. Splitting it here is cheaper than explaining that.
+
+    Only a trailing all-digit segment after a single colon is treated as a port,
+    so an IPv6 literal is left alone rather than mangled.
+    """
+    host = value.strip()
+    if host.count(":") != 1:
+        return host, None
+    name, _, port = host.partition(":")
+    if not port.isdigit() or not name:
+        return host, None
+    number = int(port)
+    if not 1 <= number <= 65535:
+        return host, None
+    return name, number
+
+
 class ProfileCreate(BaseModel):
     team_id: str
     name: str = Field(min_length=1, max_length=120)
@@ -125,6 +149,16 @@ class ProfileCreate(BaseModel):
             raise ValueError("this mode needs a jump host address")
         return value
 
+    @model_validator(mode="after")
+    def _gateway_port_may_arrive_attached(self) -> ProfileCreate:
+        host, port = split_gateway(self.vpn_gateway)
+        self.vpn_gateway = host
+        # A port in the pasted string is the one the user meant; the field's
+        # own value is still the untouched 443 default they never looked at.
+        if port is not None:
+            self.vpn_port = port
+        return self
+
 
 class ProfileUpdate(BaseModel):
     name: str | None = None
@@ -140,6 +174,18 @@ class ProfileUpdate(BaseModel):
     jump_password: str | None = None
     jump_private_key: str | None = None
     whitelist_url: str | None = None
+
+    @model_validator(mode="after")
+    def _gateway_port_may_arrive_attached(self) -> ProfileUpdate:
+        if self.vpn_gateway is None:
+            return self
+        host, port = split_gateway(self.vpn_gateway)
+        self.vpn_gateway = host
+        # Only when the paste carried one: an explicit vpn_port in the same
+        # request is a deliberate value and must win over an absent one.
+        if port is not None and self.vpn_port is None:
+            self.vpn_port = port
+        return self
 
 
 class ProfileOut(Model):

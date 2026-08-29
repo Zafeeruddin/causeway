@@ -25,6 +25,7 @@ from pathlib import Path
 
 import boto3
 import structlog
+from boto3.exceptions import Boto3Error
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -128,8 +129,13 @@ class ObjectStore:
                     multipart_chunksize=MULTIPART_CHUNK,
                 ),
             )
-        except (ClientError, BotoCoreError) as exc:
-            raise StorageError(f"upload of {key} failed: {exc}") from exc
+        except (ClientError, BotoCoreError, Boto3Error) as exc:
+            # ``upload_file`` does not raise what the rest of boto3 raises: a
+            # refusal from the gateway comes back as S3UploadFailedError, which
+            # is a Boto3Error and neither a ClientError nor a BotoCoreError.
+            # Catching only those two let a missing bucket escape put_file
+            # uncaught, and an uncaught exception here strands the recording.
+            raise _upload_failed(key, exc) from exc
         log.info("storage.put", key=key, bytes=size)
         return StoredObject(key=key, bytes=size, content_type=content_type)
 
@@ -193,6 +199,19 @@ class ObjectStore:
             if not page.get("IsTruncated"):
                 return total, count
             token = page.get("NextContinuationToken")
+
+
+def _upload_failed(key: str, exc: Exception) -> StorageError:
+    """Say which of the two upload failures this was.
+
+    A bucket that is not there and a gateway that is not answering both stop an
+    upload, and the person reading the failure can only act on one of them. The
+    distinction is in the wrapped error's text, because S3UploadFailedError
+    keeps the original response as a string and nothing else.
+    """
+    if "NoSuchBucket" in str(exc):
+        return BucketMissing(f"upload of {key} failed: the bucket does not exist")
+    return StorageError(f"upload of {key} failed: {exc}")
 
 
 _store: ObjectStore | None = None

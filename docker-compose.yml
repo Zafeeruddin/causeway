@@ -64,9 +64,17 @@ services:
 
   # Holds the VPN clients, the SSH masters and the ffmpeg recorders.
   #
-  # NET_ADMIN is what lets it create one network namespace per connection
-  # profile. /dev/ppp is openfortivpn's; without it pppd fails with a message
-  # that does not mention the device.
+  # NET_ADMIN is what lets it configure one network namespace per connection
+  # profile, but creating one is a mount -- `ip netns add` bind-mounts the
+  # namespace under /run/netns and makes that mount shared -- so it needs
+  # SYS_ADMIN as well, and AppArmor's docker-default profile refuses the mount
+  # even once the capability is there. All three are required: with NET_ADMIN
+  # alone `ip netns add` fails "mount --make-shared /run/netns failed:
+  # Operation not permitted"; adding SYS_ADMIN turns that into "Permission
+  # denied", which is AppArmor talking, not the kernel.
+  #
+  # /dev/ppp is openfortivpn's; without it pppd fails with a message that does
+  # not mention the device.
   agent:
     build: {context: ./backend, dockerfile: ../deploy/agent.Dockerfile}
     env_file: [.env]
@@ -77,7 +85,8 @@ services:
     # uploading what is already on disk. The 10s default would kill that
     # mid-upload and strand the segments on the work volume.
     stop_grace_period: 120s
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    security_opt: [apparmor:unconfined]
     devices: ["/dev/ppp:/dev/ppp"]
     sysctls: {net.ipv4.ip_forward: 1}
     volumes:
@@ -96,4 +105,8 @@ networks:
   control:
     driver: bridge
     ipam:
-      config: [{subnet: 172.28.0.0/16}]
+      # Pinned so the namespaces' control route has something stable to point
+      # at, and overridable because a machine with other Docker projects on it
+      # will already own this range -- compose fails to create the network
+      # outright when it overlaps. Keep any replacement inside CONTROL_CIDRS.
+      config: [{subnet: "${CONTROL_SUBNET:-172.28.0.0/16}"}]

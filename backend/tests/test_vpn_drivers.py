@@ -10,7 +10,13 @@ from __future__ import annotations
 import pytest
 
 from app.enums import VpnKind
-from app.net.vpn.base import AuthFailed, PostureFailed, TrustPromptRequired, VpnConfig
+from app.net.vpn.base import (
+    AuthFailed,
+    PostureFailed,
+    TrustPromptRequired,
+    VpnConfig,
+    VpnError,
+)
 from app.net.vpn.direct import DirectDriver
 from app.net.vpn.fortinet import FortinetDriver
 from app.net.vpn.globalprotect import GlobalProtectDriver
@@ -96,7 +102,10 @@ async def test_fortinet_password_goes_over_stdin_never_argv():
         )
     argv = runner.calls[0]
     assert "hunter2" not in " ".join(argv)
-    assert "--password-on-stdin" in argv
+    # There is no flag for this: openfortivpn takes a password on argv (-p) or
+    # off stdin, and argv is readable by every process on the host.
+    assert not {"-p", "--password"} & set(argv)
+    assert not any(a.startswith("--password") for a in argv)
     assert proc.stdin.written == b"hunter2\n"
 
 
@@ -144,5 +153,34 @@ async def test_direct_mode_is_a_driver_not_a_null_check():
 
 async def test_a_client_that_dies_without_speaking_is_reported_as_such():
     runner = FakeRunner(process=FakeProcess(stderr=[]))
-    with pytest.raises(Exception, match="exited without connecting"):
+    with pytest.raises(Exception, match="stopped without connecting"):
         await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
+
+
+async def test_a_client_that_rejects_its_own_arguments_says_so(monkeypatch):
+    """A wrong flag and an unreachable gateway both end as "the client exited".
+    Reported as "The VPN connection failed." they are indistinguishable, and the
+    reader goes hunting for a network problem that is not there."""
+    runner = FakeRunner(
+        process=FakeProcess(
+            stderr=[
+                "openfortivpn: unrecognized option '--password-on-stdin'",
+                "Usage: openfortivpn [<host>[:<port>]] [-u <user>] [-p <pass>]",
+            ]
+        )
+    )
+    with pytest.raises(VpnError) as caught:
+        await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
+
+    assert "unrecognized option" in caught.value.user_message
+
+
+async def test_the_reason_comes_from_the_client_not_from_us():
+    """openfortivpn prefixes its complaints; the prefix is noise to the reader."""
+    runner = FakeRunner(
+        process=FakeProcess(stderr=["INFO:   Connected to gateway.", "ERROR:  Operation canceled"])
+    )
+    with pytest.raises(VpnError) as caught:
+        await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
+
+    assert caught.value.user_message.endswith("Operation canceled")

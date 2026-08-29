@@ -81,6 +81,39 @@ async def test_creating_a_profile_never_echoes_its_credentials(as_member, seeded
     assert body["state"] == ProfileState.IDLE.value
 
 
+async def test_a_gateway_pasted_with_its_port_is_split_into_the_two_fields(as_member, seeded):
+    """FortiClient labels this "Remote Gateway" and shows it as host:port, so
+    host:port is what gets pasted. Stored whole it is not a hostname, and the
+    failure surfaces two layers down as "Name or service not known"."""
+    response = await as_member.post(
+        "/api/profiles",
+        json=_profile_body(seeded["acme"], vpn_gateway="82.197.58.159:20443"),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["vpn_gateway"] == "82.197.58.159"
+    assert body["vpn_port"] == 20443
+
+
+async def test_a_gateway_without_a_port_keeps_the_one_it_was_given(as_member, seeded):
+    response = await as_member.post(
+        "/api/profiles",
+        json=_profile_body(seeded["acme"], vpn_gateway="vpn.example.com", vpn_port=10443),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["vpn_gateway"], body["vpn_port"]) == ("vpn.example.com", 10443)
+
+
+async def test_an_ipv6_gateway_is_not_mistaken_for_a_host_and_port(as_member, seeded):
+    response = await as_member.post(
+        "/api/profiles",
+        json=_profile_body(seeded["acme"], vpn_gateway="2001:db8::1"),
+    )
+    assert response.status_code == 201
+    assert response.json()["vpn_gateway"] == "2001:db8::1"
+
+
 async def test_a_mode_that_needs_a_vpn_refuses_to_be_created_without_one(as_member, seeded):
     response = await as_member.post(
         "/api/profiles",

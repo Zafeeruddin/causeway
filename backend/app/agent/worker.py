@@ -203,9 +203,14 @@ class Agent:
                 log.exception("agent.claim_failed")
             await asyncio.sleep(poll)
 
-    def _forget(self, recording_id: str, _task: asyncio.Task) -> None:
+    def _forget(self, recording_id: str, task: asyncio.Task) -> None:
         self._tasks.pop(recording_id, None)
         self._running.pop(recording_id, None)
+        # Nothing awaits these tasks, so an exception that reaches here is one
+        # nobody would ever see: asyncio only reports it when the task is
+        # collected, and by then the row it belonged to is long forgotten.
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("recording.task_crashed", recording=recording_id, exc_info=exc)
 
     async def claim(self, slots: int) -> list[str]:
         """Take up to ``slots`` queued recordings, atomically.
@@ -276,7 +281,15 @@ class Agent:
             await self._fail(recording_id, _message_for(exc))
             return
 
-        await self.finalize(recording_id, plan, report, sink, session.work_dir)
+        try:
+            await self.finalize(recording_id, plan, report, sink, session.work_dir)
+        except Exception as exc:  # noqa: BLE001 - the row is what matters here
+            # finalize is the last thing that touches this row. Letting it raise
+            # leaves the recording in FINALIZING with no reason on it, forever,
+            # and the task dies where nobody is looking -- so the failure has to
+            # be written down here even when we do not know what it was.
+            log.exception("recording.finalize_crashed", recording=recording_id)
+            await self._fail(recording_id, _message_for(exc))
 
     async def _plan(self, recording_id: str) -> _Plan:
         async with self._sessions() as db:
@@ -341,11 +354,16 @@ class Agent:
             return
 
         if not shipped.ok:
-            # Segments are still on the work volume. Deleting them here would
-            # destroy the only copy of footage the storage gateway never got.
+            # The segments are still on the work volume -- deleting them here
+            # would destroy the only copy of footage the gateway never got --
+            # and the person reading this is the one who decides what to do
+            # about that, so the message says so rather than leaving them to
+            # guess.
+            detail = "; ".join(shipped.failures) or "the recording could not be uploaded"
             await self._fail(
                 recording_id,
-                "; ".join(shipped.failures) or "the recording could not be uploaded",
+                f"{detail.rstrip('.')}. "
+                "The recording is still on the work volume and was not deleted.",
             )
             return
 
