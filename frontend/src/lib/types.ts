@@ -60,6 +60,8 @@ export interface Preview {
   /** The hard stop. The stream also ends on its own once the last viewer leaves. */
   expires_at: string;
   viewers: number;
+  /** What the camera is sending, as MediaMTX names it: "H264", "H265". */
+  codec: string;
 }
 
 export interface ImportIssue { line: number; value: string; reason: string }

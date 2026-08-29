@@ -104,9 +104,10 @@ class FakeRunner:
 class FakeMediaMtx:
     """MediaMTX without the container. Paths are a dict; readiness is scripted."""
 
-    def __init__(self, *, ready: bool = True) -> None:
+    def __init__(self, *, ready: bool = True, tracks: tuple[str, ...] = ("H264",)) -> None:
         self.paths: dict[str, int] = {}
         self.ready = ready
+        self.tracks = tracks
         self.removed: list[str] = []
 
     async def add_path(self, name: str) -> None:
@@ -121,13 +122,13 @@ class FakeMediaMtx:
 
         if name not in self.paths:
             return None
-        return PathState(name=name, ready=self.ready, readers=self.paths[name])
+        return PathState(name=name, ready=self.ready, readers=self.paths[name], tracks=self.tracks)
 
     async def states(self) -> dict:
         from app.services.mediamtx import PathState
 
         return {
-            name: PathState(name=name, ready=self.ready, readers=readers)
+            name: PathState(name=name, ready=self.ready, readers=readers, tracks=self.tracks)
             for name, readers in self.paths.items()
         }
 

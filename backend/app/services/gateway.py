@@ -207,6 +207,7 @@ def preview_payload(info: PreviewInfo) -> dict[str, Any]:
         "started_at": info.started_at.isoformat(),
         "expires_at": info.expires_at.isoformat(),
         "viewers": info.viewers,
+        "codec": info.codec,
     }
 
 
@@ -219,6 +220,7 @@ def preview_from_payload(payload: dict[str, Any]) -> PreviewInfo:
         started_at=datetime.fromisoformat(payload["started_at"]),
         expires_at=datetime.fromisoformat(payload["expires_at"]),
         viewers=payload.get("viewers", 0),
+        codec=payload.get("codec", ""),
     )
 
 

@@ -212,6 +212,97 @@ async def test_a_stream_that_never_arrives_leaves_nothing_behind(sessions, camer
     assert process.terminated or process.returncode is not None
 
 
+async def test_two_starts_at_once_build_one_stream_not_two(sessions, camera, publishable):
+    """A stream is only in _live once it is ready, so two starts inside that
+    window both find nothing and both open a tunnel. They then contend for it:
+    the first to be stopped releases the port lease and the second loses its
+    input. React mounting a component twice is enough to produce it."""
+    import asyncio
+
+    class SlowToOpen(ScriptedPath):
+        """Opening a real path dials, forwards and leases a port. Yielding is
+        what lets the second start in, and is what makes this a race."""
+
+        async def open(self):
+            await asyncio.sleep(0)
+            return await super().open()
+
+    mtx = FakeMediaMtx()
+    path = SlowToOpen()
+    previews = build(sessions, path, mtx)
+
+    async with sessions() as db:
+        first, second = await asyncio.gather(
+            previews.start(db, camera, "user-1"),
+            previews.start(db, camera, "user-2"),
+        )
+
+    assert first.id == second.id, "two viewers, two streams"
+    assert previews.count == 1
+    assert path.opened == 1, "the camera was opened twice"
+    assert len(mtx.paths) == 1
+
+    # And the second viewer is on the shared stream, not a forgotten one.
+    await previews.stop(first.id, "user-1")
+    assert previews.count == 1
+
+
+async def test_a_codec_the_browser_can_take_is_copied_not_re_encoded(sessions, camera, publishable):
+    """Fifteen concurrent previews is the design target. Transcoding the ones
+    that would have played is what makes the machine the limit."""
+    path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "h264"
+        await previews.start(db, camera, "user-1")
+
+    argv = " ".join(path.spawned[0])
+    assert "-c copy" in argv
+    assert "libx264" not in argv
+
+
+async def test_a_codec_no_browser_decodes_is_re_encoded_on_the_way_through(
+    sessions, camera, publishable
+):
+    """H.265 records perfectly and plays in nothing. Copying it hands the
+    browser a stream it will negotiate for and then not display."""
+    path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "hevc"
+        await previews.start(db, camera, "user-1")
+
+    argv = " ".join(path.spawned[0])
+    assert "-c:v libx264" in argv
+    assert "-c copy" not in argv
+    # Audio is dropped rather than re-encoded: nothing here listens to it.
+    assert "-an" in argv
+
+
+async def test_an_unprobed_source_is_copied_rather_than_guessed_at(sessions, camera, publishable):
+    """Spending a core on a stream that would have played is worse than the
+    player saying it cannot decode this one."""
+    path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        await previews.start(db, camera, "user-1")
+
+    assert "-c copy" in " ".join(path.spawned[0])
+
+
+async def test_the_codec_travels_with_the_preview(sessions, camera, publishable):
+    """A browser cannot find out what it is being offered until it has
+    negotiated, and a codec it cannot decode fails there as a black frame."""
+    previews = build(sessions, ScriptedPath(), FakeMediaMtx(tracks=("H265",)))
+
+    async with sessions() as db:
+        info = await previews.start(db, camera, "user-1")
+
+    assert info.codec == "H265"
+
+
 async def test_one_viewer_leaving_does_not_blank_the_other(sessions, camera, publishable):
     """A shared stream outlives any single viewer. Tearing it down on the first
     stop is what makes the second person's picture go black for no reason they
