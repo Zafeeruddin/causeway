@@ -14,7 +14,7 @@ from botocore.exceptions import EndpointConnectionError
 
 from app.enums import SourceKind
 from app.storage.client import BucketMissing, ObjectStore, StorageError
-from app.storage.keys import content_type_for, source_key, team_prefix
+from app.storage.keys import content_type_for, download_name, source_key, team_prefix
 from app.storage.retention import (
     Candidate,
     StoragePolicy,
@@ -50,6 +50,40 @@ def test_keys_are_team_scoped_then_dated():
     key = source_key("mofa", "rec-1", NOW, SourceKind.RTSP, "session.mp4")
     assert key == "teams/mofa/2026/08/28/rec-1/rtsp/session.mp4"
     assert key.startswith(team_prefix("mofa"))
+
+
+def test_a_downloaded_file_says_which_camera_and_when():
+    """In the bucket every session file is session.mp4, which is right there and
+    useless in a downloads folder: the second one is "session (1).mp4" and
+    nothing on it says which camera or which day."""
+    name = download_name(
+        "EPM-CAM", NOW, SourceKind.RTSP, "teams/mofa/2026/08/28/rec-1/rtsp/session.mp4"
+    )
+    assert name == "EPM-CAM-2026-08-28-120000Z-rtsp.mp4"
+
+
+def test_the_two_feeds_of_one_recording_do_not_collide():
+    rtsp = download_name("EPM-CAM", NOW, SourceKind.RTSP, "x/rtsp/session.mp4")
+    hls = download_name("EPM-CAM", NOW, SourceKind.HLS, "x/hls/session.mp4")
+    assert rtsp != hls
+
+
+def test_the_sidecar_keeps_its_own_name_and_extension():
+    """gaps.json belongs to no source, so the source slot carries what it is."""
+    name = download_name("EPM-CAM", NOW, None, "teams/mofa/2026/08/28/rec-1/gaps.json")
+    assert name == "EPM-CAM-2026-08-28-120000Z-gaps.json"
+
+
+def test_a_camera_name_is_made_safe_without_being_mangled():
+    """Spaces and punctuation collapse to single dashes rather than vanishing --
+    "Gate1North" is not a name anyone will recognise."""
+    assert download_name("Gate 1 - North", NOW, SourceKind.RTSP, "x/session.mp4").startswith(
+        "Gate-1-North-"
+    )
+    assert download_name("../../etc/passwd", NOW, SourceKind.RTSP, "x/session.mp4") == (
+        "etc-passwd-2026-08-28-120000Z-rtsp.mp4"
+    )
+    assert download_name("   ", NOW, SourceKind.RTSP, "x/session.mp4").startswith("camera-")
 
 
 def test_hls_playlists_get_the_right_content_type():

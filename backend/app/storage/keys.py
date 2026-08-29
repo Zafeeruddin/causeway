@@ -17,11 +17,18 @@ index to find them.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from pathlib import PurePosixPath
 
 from app.enums import SourceKind
 
 ROOT = "teams"
+
+#: Runs of anything that is not safe in a filename on every platform we hand one
+#: to. Collapsed to a single dash rather than dropped, so "Gate 1 - North" does
+#: not come out as "Gate1North".
+_UNSAFE = re.compile(r"[^A-Za-z0-9]+")
 
 
 def recording_prefix(team_slug: str, recording_id: str, started_at: datetime) -> str:
@@ -41,6 +48,24 @@ def sidecar_key(team_slug: str, recording_id: str, started_at: datetime, filenam
 
 def team_prefix(team_slug: str) -> str:
     return f"{ROOT}/{team_slug}/"
+
+
+def download_name(camera_name: str, started_at: datetime, kind: SourceKind | None, key: str) -> str:
+    """What the file is called once it leaves here.
+
+    A key is an address: every session file is ``session.mp4``, which is right
+    in the bucket and useless in a downloads folder, where the second one is
+    "session (1).mp4" and nothing on it says which camera or which day. The name
+    that travels carries the camera, the moment and the source instead, in that
+    order so a directory listing sorts by camera and then by time.
+
+    The timestamp is UTC and says so. Keys are laid out by UTC date, and a bare
+    local-looking time on a file whose neighbours are UTC is how two recordings
+    an hour apart end up looking like the same one.
+    """
+    stem = _UNSAFE.sub("-", camera_name).strip("-")[:60] or "camera"
+    suffix = kind.value if kind is not None else PurePosixPath(key).stem
+    return f"{stem}-{started_at:%Y-%m-%d}-{started_at:%H%M%S}Z-{suffix}{PurePosixPath(key).suffix}"
 
 
 def content_type_for(filename: str) -> str:
