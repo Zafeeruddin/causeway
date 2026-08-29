@@ -38,6 +38,29 @@ srt: no
 api: yes
 apiAddress: :9997
 
+# MediaMTX authenticates its own API, and its built-in default grants
+# publish/read/playback to everyone and `api` to nobody -- so path management,
+# which is how every preview starts, is refused until this says otherwise. The
+# symptom is every preview failing with "the preview server refused the path".
+#
+# Granted by source network rather than by password, so the agent's client stays
+# credential-free: the API is reachable only from the compose bridge, and from
+# loopback on the host for a single-process dev run. Read access is still open
+# to anyone who can reach the stream ports -- ROADMAP entry 12.
+authInternalUsers:
+  - user: any
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    ips: [172.16.0.0/12, 127.0.0.1/32]
+    permissions:
+      - action: api
+      - action: publish
+      - action: read
+      - action: playback
+
 # Paths are added over the API just before a publisher starts and deleted when
 # it stops -- see app/services/mediamtx.py. An empty config is the whole point:
 # a path with no source waits for someone to publish to it.

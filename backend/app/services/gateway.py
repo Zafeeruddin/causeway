@@ -190,8 +190,8 @@ class RemotePreview:
         )
         return preview_from_payload(payload)
 
-    async def stop(self, preview_id: str) -> None:
-        await self._bus.call("preview.stop", {"preview_id": preview_id})
+    async def stop(self, preview_id: str, user_id: str | None = None) -> None:
+        await self._bus.call("preview.stop", {"preview_id": preview_id, "user_id": user_id})
 
     async def list(self, user_id: str | None = None) -> list[PreviewInfo]:
         payload = await self._bus.call("preview.list", {"user_id": user_id})

@@ -18,6 +18,7 @@ import abc
 import asyncio
 import contextlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import structlog
@@ -53,6 +54,39 @@ class PostureFailed(VpnError):
 
 class DialTimeout(VpnError):
     user_message = "The gateway did not respond in time."
+
+
+class ClientExited(VpnError):
+    """The client stopped before the tunnel came up, saying nothing we know how
+    to classify.
+
+    Whatever it said last is the only lead there is, so it travels on the
+    message. The generic "The VPN connection failed." is true of every rung on
+    this ladder and sends the reader looking in the wrong place -- a client that
+    rejected its own arguments and a gateway that hung up read identically.
+    """
+
+    def __init__(self, tail: Sequence[str]) -> None:
+        reason = _last_complaint(tail)
+        self.user_message = (
+            f"The VPN client stopped without connecting: {reason}"
+            if reason
+            else "The VPN client stopped without connecting."
+        )
+        super().__init__(f"{self.user_message}\n" + "\n".join(tail[-40:]))
+
+
+def _last_complaint(tail: Sequence[str]) -> str:
+    """The most recent line that reads like a complaint, without its prefix."""
+    for line in reversed(tail):
+        text = line.strip()
+        if not text:
+            continue
+        if match := re.match(r"(?:ERROR|FATAL|WARN(?:ING)?):\s*(.+)", text, re.I):
+            return match.group(1)[:200]
+        if re.search(r"unrecognized|invalid|no such|not found|refused|failed", text, re.I):
+            return text[:200]
+    return ""
 
 
 class InteractionRequired(VpnError):
@@ -203,7 +237,7 @@ class VpnDriver(abc.ABC):
             while True:
                 line = await mux.readline()
                 if line is None:
-                    raise VpnError(f"the VPN client exited without connecting.\n{self.log_tail}")
+                    raise ClientExited(self._log_tail)
                 text = line.rstrip()
                 if text:
                     self._log_tail.append(text)

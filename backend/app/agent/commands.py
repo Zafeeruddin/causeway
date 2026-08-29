@@ -130,7 +130,7 @@ class ConnectionCommands:
 
     async def _preview_stop(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.previews is not None:
-            await self.previews.stop(payload["preview_id"])
+            await self.previews.stop(payload["preview_id"], payload.get("user_id"))
         return {}
 
     async def _preview_list(self, payload: dict[str, Any]) -> dict[str, Any]:

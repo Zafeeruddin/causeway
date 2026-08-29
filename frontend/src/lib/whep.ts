@@ -143,11 +143,22 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
   });
 }
 
-/** Servers commonly answer with a path-only Location, which fetch cannot delete. */
+/**
+ * Resolve the answer's Location header into something we can actually DELETE.
+ *
+ * MediaMTX answers with a root-relative path of its own -- `/preview/…/whep/id`
+ * -- which is correct from its point of view and wrong from ours: we reach it
+ * through a proxy mounted at `/rtc`, and resolving that path against our origin
+ * lands on the dashboard, which 404s. So a root-relative Location is re-mounted
+ * under the same prefix the WHEP URL was served from. Getting this wrong is
+ * quiet: the session is only released when the peer connection drops.
+ */
 function absolute(location: string | null, base: string): string | null {
   if (!location) return null;
   try {
-    return new URL(location, base).toString();
+    const mount = base.startsWith("/") ? `/${base.split("/")[1] ?? ""}` : "";
+    const target = location.startsWith("/") && mount ? `${mount}${location}` : location;
+    return new URL(target, window.location.origin).toString();
   } catch {
     return null;
   }

@@ -48,9 +48,19 @@ class FortinetDriver(VpnDriver):
             f"{cfg.gateway}:{cfg.port}",
             "--username",
             cfg.username,
-            "--password-on-stdin",
-            # pppd would otherwise rewrite the container's /etc/resolv.conf.
-            "--pppd-no-peerdns",
+            # There is no flag for the password and we would not use one if
+            # there were: -p puts it in argv, where every process on the host
+            # can read it. Given no password openfortivpn prints "VPN account
+            # password: " and reads stdin, which is what dial() writes to below.
+            #
+            # Both of these keep the tunnel out of the container's DNS. pppd
+            # would otherwise hand over the gateway's nameservers and
+            # openfortivpn would write them into /etc/resolv.conf -- which is
+            # the container's own, so a dialled profile would take out name
+            # resolution for postgres, redis and mediamtx at once. Cameras are
+            # addressed by IP, so there is nothing to lose here.
+            "--pppd-use-peerdns=0",
+            "--set-dns=0",
             "--persistent=0",
         ]
         if cfg.realm:

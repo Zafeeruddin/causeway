@@ -41,8 +41,10 @@ which is correct for direct mode and unsafe for anything else, so
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import os
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -100,12 +102,25 @@ class NetnsManager:
         self._inside = inside_runner or NetnsRunner
         self._active: dict[str, Namespace] = {}
         self._next_block = 0
+        #: Why the kernel last refused to create a namespace here, if it has.
+        self._refused: str | None = None
+        #: Addresses reachable from each namespace that are not control plane.
+        self._allowed: dict[str, set[str]] = {}
 
     # ---- capability ----------------------------------------------------
 
     @property
     def available(self) -> bool:
-        """True when this process can actually manipulate namespaces."""
+        """True when this process can actually manipulate namespaces.
+
+        Being root is necessary and not sufficient: creating a namespace mounts,
+        and a container can hold every capability while a mediation layer still
+        refuses the mount. That cannot be settled without trying, so this stays
+        a guess until a refusal proves it wrong -- after which it reports the
+        truth rather than repeating the guess.
+        """
+        if self._refused is not None:
+            return False
         if os.geteuid() == 0:
             return True
         # CAP_NET_ADMIN without root is possible; probing is cheaper than parsing caps.
@@ -124,7 +139,8 @@ class NetnsManager:
             return self._active[name]
         if not self.available:
             raise NetnsUnavailable(
-                "network namespaces need CAP_NET_ADMIN. Run the agent container with "
+                self._refused
+                or "network namespaces need CAP_NET_ADMIN. Run the agent container with "
                 "cap_add: [NET_ADMIN], or use a direct-mode profile for local development."
             )
 
@@ -140,7 +156,10 @@ class NetnsManager:
             prefixlen=block.prefixlen,
         )
 
-        await self._run(["ip", "netns", "add", ns.name])
+        try:
+            await self._run(["ip", "netns", "add", ns.name])
+        except CommandFailed as exc:
+            raise self._refusal(exc) from exc
         try:
             await self._wire(ns)
         except Exception:
@@ -150,6 +169,26 @@ class NetnsManager:
         self._active[name] = ns
         log.info("netns.created", namespace=ns.name, ns_ip=str(ns.ns_ip))
         return ns
+
+    def _refusal(self, exc: CommandFailed) -> NetnsUnavailable:
+        """Turn a refused ``ip netns add`` into something a person can act on.
+
+        Creating a namespace is a mount, and more than one thing can refuse it.
+        The two refusals read alike as a failed command and mean different
+        things: ``Operation not permitted`` is the missing capability, while
+        ``Permission denied`` is a mediation layer that the capability does not
+        satisfy. Reported as "CommandFailed" they are indistinguishable, and the
+        person is left to guess which of the two they are looking at.
+        """
+        detail = exc.result.stderr.strip().splitlines()[-1][:200] if exc.result.stderr else str(exc)
+        self._refused = (
+            f"this container cannot create network namespaces: {detail}. "
+            "Creating one is a mount, so the agent needs "
+            "cap_add: [NET_ADMIN, SYS_ADMIN] and security_opt: [apparmor:unconfined] -- "
+            "NET_ADMIN on its own is not enough. Direct-mode profiles work regardless."
+        )
+        log.error("netns.refused", namespace=self.prefix, detail=detail)
+        return NetnsUnavailable(self._refused)
 
     async def _wire(self, ns: Namespace) -> None:
         inside = self._inside(ns.name)
@@ -176,13 +215,95 @@ class NetnsManager:
         for cidr in self.control_cidrs:
             await inside.run(["ip", "route", "add", cidr, "via", str(ns.host_ip)], check=True)
 
-        await self._run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+        await self._enable_forwarding()
         await self._nat(ns, "-A")
+
+    async def _enable_forwarding(self) -> None:
+        """Turn on IPv4 forwarding, or confirm someone already did.
+
+        The veth pair reaches the control plane through the agent's own stack,
+        so forwarding has to be on. A container cannot turn it on: /proc/sys is
+        mounted read-only, and ``sysctl -w`` is refused there whatever
+        capabilities it holds. What the container runtime *can* do is set it at
+        creation -- ``sysctls:`` in compose does exactly that -- so arriving here
+        with it already on is the normal case in the deployment we ship, and
+        treating the failed write as fatal breaks a correctly configured host.
+        Writing is for an agent run outside a container.
+        """
+        try:
+            await self._host.run(
+                ["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True, timeout=15.0
+            )
+            return
+        except CommandFailed as exc:
+            result = await self._host.run(["sysctl", "-n", "net.ipv4.ip_forward"], timeout=15.0)
+            if result.stdout.strip() != "1":
+                raise NetnsUnavailable(
+                    "IPv4 forwarding is off and this container cannot turn it on "
+                    "(/proc/sys is read-only). Set it on the agent service with "
+                    "sysctls: {net.ipv4.ip_forward: 1}, or enable it on the host."
+                ) from exc
+            log.debug("netns.forwarding_already_on")
+
+    async def allow_host(self, profile_id: str, host: str) -> list[str]:
+        """Let one host outside the control plane be reached from the namespace.
+
+        The namespace has no default route on purpose: camera traffic must never
+        be able to fall back to the host's network when the tunnel drops. But
+        the VPN client has to reach its gateway *before* there is a tunnel, and
+        the gateway is on the public internet. Without this the dial fails with
+        "connect: Network is unreachable" -- which reads like the gateway is
+        down, when what is missing is the one route out.
+
+        So the gateway, and only the gateway, gets a host route. Everything else
+        still has nowhere to go until the VPN installs the default itself.
+        """
+        name = self.ns_name(profile_id)
+        ns = self._active.get(name)
+        if ns is None or not host:
+            return []
+
+        addresses = await self._resolve(host)
+        allowed = self._allowed.setdefault(name, set())
+        inside = self._inside(name)
+        for address in addresses:
+            if address in allowed:
+                continue
+            # `replace` rather than `add`: a gateway that has moved should end up
+            # with one correct route, not a second one and an error.
+            await inside.run(
+                ["ip", "route", "replace", f"{address}/32", "via", str(ns.host_ip)], check=True
+            )
+            await self._masquerade(ns, f"{address}/32", "-A", skip_if_present=True)
+            allowed.add(address)
+            log.info("netns.host_allowed", namespace=name, host=host, address=address)
+        return addresses
+
+    async def _resolve(self, host: str) -> list[str]:
+        """Addresses for ``host``, resolved out here rather than in the namespace.
+
+        The namespace has no DNS -- that is the point of it -- so a gateway
+        named rather than numbered can only be resolved by the agent itself.
+        """
+        try:
+            return [str(ipaddress.ip_address(host))]
+        except ValueError:
+            pass
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(host, None, family=socket.AF_INET)
+        except OSError as exc:
+            raise NetnsUnavailable(
+                f"the VPN gateway {host!r} could not be resolved: {exc}"
+            ) from exc
+        return sorted({str(info[4][0]) for info in infos})
 
     async def destroy(self, profile_id: str) -> None:
         name = self.ns_name(profile_id)
         ns = self._active.pop(name, None)
         if ns is not None:
+            for address in self._allowed.pop(name, set()):
+                await self._masquerade(ns, f"{address}/32", "-D", ignore_errors=True)
             await self._nat(ns, "-D", ignore_errors=True)
             await self._run(["ip", "link", "del", ns.host_if], ignore_errors=True)
         await self._run(["ip", "netns", "del", name], ignore_errors=True)
@@ -196,22 +317,35 @@ class NetnsManager:
 
     async def _nat(self, ns: Namespace, op: str, *, ignore_errors: bool = False) -> None:
         for cidr in self.control_cidrs:
-            await self._run(
-                [
-                    "iptables",
-                    "-t",
-                    "nat",
-                    op,
-                    "POSTROUTING",
-                    "-s",
-                    f"{ns.ns_ip}/32",
-                    "-d",
-                    cidr,
-                    "-j",
-                    "MASQUERADE",
-                ],
-                ignore_errors=ignore_errors,
+            await self._masquerade(ns, cidr, op, ignore_errors=ignore_errors)
+
+    async def _masquerade(
+        self,
+        ns: Namespace,
+        destination: str,
+        op: str,
+        *,
+        ignore_errors: bool = False,
+        skip_if_present: bool = False,
+    ) -> None:
+        rule = [
+            "POSTROUTING",
+            "-s",
+            f"{ns.ns_ip}/32",
+            "-d",
+            destination,
+            "-j",
+            "MASQUERADE",
+        ]
+        if skip_if_present:
+            # An agent restart forgets which rules it added; the namespace and
+            # its rules survive. Asking iptables is the only way to know.
+            present = await self._host.run(
+                ["iptables", "-t", "nat", "-C", *rule], check=False, timeout=15.0
             )
+            if present.returncode == 0:
+                return
+        await self._run(["iptables", "-t", "nat", op, *rule], ignore_errors=ignore_errors)
 
     async def _run(self, argv: list[str], *, ignore_errors: bool = False) -> None:
         try:

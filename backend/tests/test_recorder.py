@@ -513,7 +513,9 @@ async def test_segments_stay_on_disk_when_the_upload_fails(tmp_path):
     )
 
     assert not result.ok
-    assert result.failures
+    # The storage layer's own words, not "upload failed" -- the person reading
+    # this needs to know where to look.
+    assert "The recording store could not be reached." in result.failures[0]
     assert list((tmp_path / "rec-1" / "rtsp").glob("run-*/seg-*.ts"))
 
 

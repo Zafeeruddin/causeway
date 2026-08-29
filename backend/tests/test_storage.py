@@ -9,8 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from boto3.exceptions import S3UploadFailedError
+from botocore.exceptions import EndpointConnectionError
 
 from app.enums import SourceKind
+from app.storage.client import BucketMissing, ObjectStore, StorageError
 from app.storage.keys import content_type_for, source_key, team_prefix
 from app.storage.retention import (
     Candidate,
@@ -160,3 +163,76 @@ def test_usage_state_names_the_four_bands():
 def test_thresholds_must_be_ordered():
     with pytest.raises(ValueError, match="warn <= gc <= hard"):
         StoragePolicy(warn_bytes=90 * GB, gc_bytes=60 * GB, hard_bytes=98 * GB)
+
+
+# ---- what an upload failure looks like ----------------------------------
+
+
+class _RefusingClient:
+    """Stands in for the boto3 client. ``upload_file`` is the only call the
+    shipper makes, and it is the one that does not raise what the rest of
+    boto3 raises."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def upload_file(self, *args, **kwargs):
+        raise self.error
+
+
+def _store(error: Exception) -> ObjectStore:
+    store = ObjectStore(
+        endpoint_url="https://storage.invalid",
+        bucket="cam-recordings",
+        access_key="k",
+        secret_key="s",
+        region="us-east-1",
+        addressing_style="path",
+    )
+    store._client = _RefusingClient(error)  # type: ignore[assignment]
+    return store
+
+
+async def test_a_gateway_refusal_during_upload_is_a_storage_error(tmp_path):
+    """S3UploadFailedError is a Boto3Error and neither a ClientError nor a
+    BotoCoreError. Letting it escape put_file strands the recording in
+    FINALIZING with nothing written down anywhere."""
+    path = tmp_path / "session.mp4"
+    path.write_bytes(b"x")
+    store = _store(
+        S3UploadFailedError(
+            "Failed to upload session.mp4 to cam-recordings/key: An error occurred "
+            "(AccessDenied) when calling the CreateMultipartUpload operation"
+        )
+    )
+
+    with pytest.raises(StorageError) as caught:
+        await store.put_file(path, "teams/mofa/session.mp4")
+
+    assert "AccessDenied" in str(caught.value)
+
+
+async def test_a_missing_bucket_says_so_rather_than_quoting_boto3(tmp_path):
+    path = tmp_path / "session.mp4"
+    path.write_bytes(b"x")
+    store = _store(
+        S3UploadFailedError(
+            "Failed to upload session.mp4 to cam-recordings/key: An error occurred "
+            "(NoSuchBucket) when calling the CreateMultipartUpload operation: "
+            "The specified bucket does not exist"
+        )
+    )
+
+    with pytest.raises(BucketMissing) as caught:
+        await store.put_file(path, "teams/mofa/session.mp4")
+
+    assert caught.value.user_message == BucketMissing.user_message
+
+
+async def test_an_unreachable_gateway_is_still_a_storage_error(tmp_path):
+    path = tmp_path / "session.mp4"
+    path.write_bytes(b"x")
+    store = _store(EndpointConnectionError(endpoint_url="https://storage.invalid"))
+
+    with pytest.raises(StorageError):
+        await store.put_file(path, "teams/mofa/session.mp4")
