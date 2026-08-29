@@ -1,5 +1,7 @@
 """Credentials must not survive a trip through a log line or an f-string."""
 
+from urllib.parse import unquote, urlsplit
+
 from app.security.redaction import StreamUrl, redact
 
 
@@ -17,6 +19,22 @@ def test_credentials_embedded_in_the_url_are_stripped_out():
     assert "hunter2" not in str(url)
     assert url.has_credentials
     assert url.expose() == "rtsp://admin:hunter2@10.0.0.42:554/stream1"
+
+
+def test_an_encoded_password_in_the_url_is_not_encoded_twice():
+    """urlsplit hands back userinfo still percent-encoded, and expose() quotes
+    what it is given. Keeping the raw form encodes it twice, and the camera
+    refuses credentials that were correct."""
+    url = StreamUrl.build("rtsp://admin:CTC2.5%2B%2B@10.244.116.70:554/Streaming/Channels/101")
+
+    assert url.expose() == "rtsp://admin:CTC2.5%2B%2B@10.244.116.70:554/Streaming/Channels/101"
+    # What actually reaches the camera, once the transport decodes it again.
+    assert unquote(urlsplit(url.expose()).password or "") == "CTC2.5++"
+
+
+def test_an_encoded_username_survives_the_same_trip():
+    url = StreamUrl.build("rtsp://user%40site:pw@10.0.0.42:554/s")
+    assert unquote(urlsplit(url.expose()).username or "") == "user@site"
 
 
 def test_expose_returns_a_usable_url():

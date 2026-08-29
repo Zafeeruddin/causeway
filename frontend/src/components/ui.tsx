@@ -1,6 +1,7 @@
 "use client";
 
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import { useState } from "react";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -87,6 +88,65 @@ const controlClass =
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cx(controlClass, className)} {...rest} />;
+}
+
+/**
+ * A password field you can look at.
+ *
+ * Typing a camera password blind and getting "authentication failed" back
+ * tells you nothing about which of the two you got wrong. The value is masked
+ * by default and revealed only while someone asks for it; it is never sent
+ * anywhere it would not have been sent anyway.
+ */
+export function PasswordInput({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
+  const [shown, setShown] = useState(false);
+  return (
+    <span className="relative block">
+      <Input {...rest} type={shown ? "text" : "password"} className={cx("pr-10", className)} />
+      <button
+        type="button"
+        onClick={() => setShown((was) => !was)}
+        aria-label={shown ? "Hide password" : "Show password"}
+        aria-pressed={shown}
+        title={shown ? "Hide password" : "Show password"}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-fg-3 transition hover:text-fg"
+      >
+        {shown ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
+    </span>
+  );
+}
+
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.75,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function EyeIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 5.1A11 11 0 0 1 12 5c6.4 0 10 7 10 7a17.7 17.7 0 0 1-3.4 4.3" />
+      <path d="M6.6 6.6A17.6 17.6 0 0 0 2 12s3.6 7 10 7a10.8 10.8 0 0 0 4-.75" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  );
 }
 
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
