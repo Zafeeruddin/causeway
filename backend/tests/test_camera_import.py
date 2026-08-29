@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from app.enums import SourceKind
+from app.security.redaction import StreamUrl
 from app.services.camera_import import (
     InvalidStreamUrl,
     parse_csv,
@@ -23,6 +24,23 @@ def test_credentials_are_split_out_of_the_url():
     assert "hunter2" not in source.url
     assert source.username == "admin"
     assert source.password == "hunter2"
+
+
+def test_an_escaped_password_is_stored_as_the_one_that_was_typed():
+    """An NVR exports `CTC2.5++` as `CTC2.5%2B%2B`. Stored escaped, it is quoted
+    again on the way to the camera and the camera answers 401 -- a credentials
+    error for credentials that were right."""
+    source = parse_source_url("rtsp://admin:CTC2.5%2B%2B@10.244.116.70:554/Streaming/Channels/101")
+
+    assert source.password == "CTC2.5++"
+    assert StreamUrl.build(source.url, source.username, source.password).expose() == (
+        "rtsp://admin:CTC2.5%2B%2B@10.244.116.70:554/Streaming/Channels/101"
+    )
+
+
+def test_an_escaped_username_survives_the_same_trip():
+    source = parse_source_url("rtsp://user%40site:pw@10.0.0.42:554/s")
+    assert source.username == "user@site"
 
 
 def test_the_default_rtsp_port_is_filled_in():

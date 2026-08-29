@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.enums import VpnKind
+from app.net.runner import ProcResult
 from app.net.vpn.base import (
     AuthFailed,
     PostureFailed,
@@ -75,6 +76,53 @@ async def test_fortinet_certificate_prompt_becomes_a_question_not_an_error():
     assert prompt.algorithm == "sha256"
     assert prompt.host == "vpn.example.com"
     assert DIGEST in prompt.user_message
+
+
+#: What a namespace with no VPN in it looks like. The kernel puts tunl0 there
+#: the moment the namespace exists.
+EMPTY_NAMESPACE = ProcResult(
+    0,
+    "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\\    link/loopback\n"
+    "2: tunl0@NONE: <NOARP> mtu 1480 state DOWN\\    link/ipip 0.0.0.0\n"
+    "4: veth-n-abc@if5: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\\    link/ether\n",
+    "",
+)
+
+
+async def test_a_namespace_with_no_tunnel_in_it_is_not_healthy():
+    """tunl0 is a kernel placeholder that starts with "tun" and exists in every
+    namespace. Matching it reports a tunnel that was never dialled, and
+    SourcePath.open trusts health to decide whether to redial -- so the SSH
+    forward fails against a master nobody opened, three layers from the cause."""
+    runner = FakeRunner(results={"link show": EMPTY_NAMESPACE})
+
+    status = await FortinetDriver(runner).health()
+
+    assert not status.up
+    assert status.interface is None
+
+
+async def test_a_tunnel_that_is_down_does_not_count_as_one():
+    down = ProcResult(0, "3: ppp0: <POINTOPOINT,MULTICAST,NOARP> mtu 1354 state DOWN\n", "")
+    assert not (await FortinetDriver(FakeRunner(results={"link show": down})).health()).up
+
+
+async def test_the_real_tunnel_is_found_past_the_placeholder(addr_show):
+    """tunl0 is listed before ppp0, so whichever is matched first is whichever
+    the filter lets through."""
+    both = ProcResult(
+        0,
+        "2: tunl0@NONE: <NOARP> mtu 1480 state DOWN\\    link/ipip\n"
+        "3: ppp0: <POINTOPOINT,MULTICAST,NOARP,UP> mtu 1354\\    link/ppp\n",
+        "",
+    )
+    runner = FakeRunner(results={"link show": both, "addr show": addr_show})
+
+    status = await FortinetDriver(runner).health()
+
+    assert status.up
+    assert status.interface == "ppp0"
+    assert status.tunnel_ip == "10.212.134.88"
 
 
 async def test_fortinet_successful_dial(link_show_ppp, addr_show):

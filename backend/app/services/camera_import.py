@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import structlog
 
 from app.enums import SourceKind
+from app.security.redaction import decoded_userinfo
 
 log = structlog.get_logger(__name__)
 
@@ -114,7 +115,9 @@ def parse_source_url(raw: str) -> ParsedSource:
     """Split a stream URL into address, path and credentials.
 
     Credentials embedded in the URL are pulled out here rather than left in the
-    stored string, so the database never holds a password in a URL column.
+    stored string, so the database never holds a password in a URL column. They
+    are percent-decoded on the way out: what is stored is the password someone
+    typed, not the escaping their NVR applied to it when it wrote the URL.
     """
     raw = raw.strip()
     if not raw:
@@ -145,8 +148,8 @@ def parse_source_url(raw: str) -> ParsedSource:
         url=clean,
         host=host,
         port=port,
-        username=parts.username or "",
-        password=parts.password or "",
+        username=decoded_userinfo(parts.username) or "",
+        password=decoded_userinfo(parts.password) or "",
     )
 
 

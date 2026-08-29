@@ -9,7 +9,7 @@ import { CertificateDialog } from "@/components/CertificateDialog";
 import { GateLadder } from "@/components/GateLadder";
 import {
   Badge, Banner, Button, Card, CardHeader, Empty, Eyebrow, Field, Input,
-  Modal, Select, Textarea, type Tone,
+  Modal, PasswordInput, Select, Textarea, type Tone,
 } from "@/components/ui";
 
 const STATE_TONE: Record<string, Tone> = {
@@ -428,8 +428,7 @@ function NewProfileModal({
                   />
                 </Field>
                 <Field label="Password" hint="Sealed on save and never shown again.">
-                  <Input
-                    type="password"
+                  <PasswordInput
                     value={form.vpn_password}
                     onChange={(e) => set("vpn_password", e.target.value)}
                     autoComplete="new-password"
@@ -479,8 +478,7 @@ function NewProfileModal({
                 </Field>
               ) : (
                 <Field label="Password" hint="Sealed on save and never shown again.">
-                  <Input
-                    type="password"
+                  <PasswordInput
                     value={form.jump_password}
                     onChange={(e) => set("jump_password", e.target.value)}
                     autoComplete="new-password"
