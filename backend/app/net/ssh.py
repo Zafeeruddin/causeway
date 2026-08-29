@@ -124,6 +124,7 @@ class TunnelManager:
 
         if await self.master_alive(jump, runner):
             return
+        await self._clear_stale_socket(jump, runner)
 
         argv = ["ssh", *self._base_opts(jump, runner), "-fNT"]
         env = dict(os.environ)
@@ -150,6 +151,30 @@ class TunnelManager:
             via=runner.name,
             socket=self.control_path(jump, runner),
         )
+
+    async def _clear_stale_socket(self, jump: JumpHost, runner: Runner) -> None:
+        """Remove a control socket whose master is no longer behind it.
+
+        The control directory is a volume and outlives the process that made it;
+        the ssh master is a child process and does not. A restart therefore
+        leaves a socket file with nothing listening, and ssh will not bind a
+        ControlPath that already exists -- it says "already exists, disabling
+        multiplexing" and connects anyway. So the dial *succeeds*, gate 5 passes,
+        and every later ``-O forward`` against that socket is refused: the
+        failure lands on the port forward and points at the wrong hop entirely.
+
+        Only reached once ``master_alive`` has said no, so there is nothing here
+        to take away from anyone.
+        """
+        path = Path(self.control_path(jump, runner))
+        try:
+            await asyncio.to_thread(path.unlink)
+        except FileNotFoundError:
+            return
+        except OSError as exc:  # noqa: BLE001 - a socket we cannot remove is ssh's problem to report
+            log.warning("ssh.master.stale_socket_kept", socket=str(path), error=str(exc))
+            return
+        log.info("ssh.master.stale_socket_removed", socket=str(path))
 
     async def master_alive(self, jump: JumpHost, runner: Runner) -> bool:
         result = await runner.run(

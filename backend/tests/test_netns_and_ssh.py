@@ -4,6 +4,7 @@ produces a system that looks connected and carries nothing."""
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -242,6 +243,40 @@ async def test_ssh_password_never_reaches_argv():
     for call in runner.calls:
         assert "hunter2" not in " ".join(call)
     assert any(call[0] == "sshpass" and "-e" in call for call in runner.calls)
+
+
+async def test_a_control_socket_left_by_a_dead_master_is_removed_first(tmp_path):
+    """The control directory is a volume and outlives the process; the master is
+    a child process and does not. ssh will not bind a ControlPath that already
+    exists -- it disables multiplexing and connects anyway, so the dial succeeds
+    and every later `-O forward` is refused against a socket nobody is holding.
+    """
+    runner = FakeRunner(results=dict(NO_MASTER))
+    manager = TunnelManager(control_dir=str(tmp_path))
+    jump = JumpHost(host="10.0.0.71", username="ops", auth=SshAuth.KEY, private_key="k")
+    stale = pathlib.Path(manager.control_path(jump, runner))
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.touch()  # noqa: ASYNC240
+
+    await manager.open_master(jump, runner)
+
+    assert not stale.exists(), "ssh would have refused to bind this and multiplexing would be off"  # noqa: ASYNC240
+
+
+async def test_a_master_that_answers_is_left_alone(tmp_path):
+    """`-O check` succeeding means something is behind the socket. Removing it
+    would tear down forwards that are carrying video right now."""
+    runner = FakeRunner()  # every command succeeds, including -O check
+    manager = TunnelManager(control_dir=str(tmp_path))
+    jump = JumpHost(host="10.0.0.71", username="ops", auth=SshAuth.KEY, private_key="k")
+    live = pathlib.Path(manager.control_path(jump, runner))
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.touch()  # noqa: ASYNC240
+
+    await manager.open_master(jump, runner)
+
+    assert live.exists()  # noqa: ASYNC240
+    assert not any("-fNT" in call for call in runner.calls), "it redialled a live master"
 
 
 async def test_forward_failure_is_not_silent():

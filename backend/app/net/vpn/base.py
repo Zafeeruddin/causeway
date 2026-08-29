@@ -28,6 +28,13 @@ from app.net.runner import Runner
 
 log = structlog.get_logger(__name__)
 
+#: Devices the kernel creates in a namespace whether or not anything uses them.
+#: ``tunl0`` is the one that bites: it exists in every namespace the moment the
+#: namespace does, and its name starts with "tun".
+PLACEHOLDER_IFACES = frozenset(
+    {"tunl0", "sit0", "gre0", "gretap0", "erspan0", "ip6tnl0", "ip6gre0", "ip_vti0", "ip6_vti0"}
+)
+
 
 # ---- failures ----------------------------------------------------------
 
@@ -204,11 +211,29 @@ class VpnDriver(abc.ABC):
         return "\n".join(self._log_tail[-40:])
 
     async def _find_interface(self) -> str | None:
+        """The tunnel device, if one is actually carrying traffic.
+
+        Two things make a bare prefix match wrong. The kernel puts a placeholder
+        device in *every* new namespace -- ``tunl0``, which begins with "tun" --
+        so matching on the name alone finds a tunnel in a namespace that has no
+        VPN in it at all, and :meth:`health` then reports up. Nothing downstream
+        survives that: ``SourcePath.open`` trusts health to decide whether to
+        redial, so it skips the redial and the SSH forward fails against a
+        master that was never opened, three layers from the cause.
+
+        A device that is down is also not a tunnel, whatever it is called.
+        """
         result = await self.runner.run(["ip", "-o", "link", "show"], timeout=5.0)
         for line in result.stdout.splitlines():
-            match = re.match(r"\d+:\s+([^:@]+)", line)
-            if match and match.group(1).startswith(self.iface_prefixes):
-                return match.group(1)
+            match = re.match(r"\d+:\s+([^:@]+)[^:]*:\s+<([^>]*)>", line)
+            if match is None:
+                continue
+            name, flags = match.group(1).strip(), match.group(2).split(",")
+            if name in PLACEHOLDER_IFACES or not name.startswith(self.iface_prefixes):
+                continue
+            if "UP" not in flags:
+                continue
+            return name
         return None
 
     async def _interface_ip(self, iface: str) -> str | None:

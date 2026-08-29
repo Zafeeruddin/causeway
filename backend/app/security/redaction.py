@@ -23,8 +23,15 @@ def redact(text: str) -> str:
     return _USERINFO.sub(f"//{MASK}:{MASK}@", text)
 
 
-def _decoded(value: str | None) -> str | None:
-    """Percent-decode a userinfo field, keeping ``None`` distinct from empty."""
+def decoded_userinfo(value: str | None) -> str | None:
+    """Percent-decode a credential taken out of a URL.
+
+    ``urlsplit`` hands back userinfo exactly as it appeared, still encoded.
+    Anything that stores or re-emits it has to decode it once here, because the
+    single encoding it deserves is applied on the way back out -- see
+    :meth:`StreamUrl.expose`. Skipping this stores a password nobody typed and
+    sends one no camera will accept.
+    """
     return unquote(value) if value else None
 
 
@@ -51,8 +58,8 @@ class StreamUrl:
         # encodes them twice, so a password of "CTC2.5++" pasted as
         # "CTC2.5%2B%2B" reaches the camera as "CTC2.5%2B%2B" and is refused --
         # a credentials error for credentials that were correct.
-        username = username or _decoded(parts.username)
-        password = password or _decoded(parts.password)
+        username = username or decoded_userinfo(parts.username)
+        password = password or decoded_userinfo(parts.password)
         netloc = f"[{host}]" if ":" in host else host
         if parts.port:
             netloc = f"{netloc}:{parts.port}"

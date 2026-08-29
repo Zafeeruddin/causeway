@@ -200,8 +200,25 @@ class ConnectionService:
     async def test_source(
         self, db: AsyncSession, profile: ConnectionProfile, camera: Camera, source: CameraSource
     ) -> ConnectOutcome:
-        """Run the source-scoped gates for one camera source."""
+        """Run the source-scoped gates for one camera source.
+
+        The profile's own hops are assumed already walked -- that is what makes
+        this the *source* ladder -- but "already walked" is a claim about a
+        process, not about a row. An agent that restarted holds no VPN and no
+        SSH master while the profile still reads ``up``, and the first rung here
+        opens a forward on a master that is not there. Recording and preview
+        redial through ``SourcePath.open`` when that happens; testing a camera
+        has to do the same or it reports a broken forward for a connection
+        nobody has made yet.
+        """
         attempt_id = str(uuid.uuid4())
+        needs_profile = source.uses_profile_path and profile.reach_mode.has_vpn
+        if needs_profile and not await self.health(profile):
+            outcome = await self.connect(db, profile)
+            if not outcome.ok:
+                # The profile's own failure, reported as the profile's -- not as
+                # whichever source rung noticed it second.
+                return outcome
         runner = await self.runner_for(profile)
         spec = await self.build_spec(profile)
         source_spec = await self.build_source_spec(source)
