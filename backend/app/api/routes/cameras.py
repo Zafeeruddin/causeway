@@ -183,6 +183,7 @@ def _preview_out(info: PreviewInfo) -> PreviewOut:
         started_at=info.started_at,
         expires_at=info.expires_at,
         viewers=info.viewers,
+        codec=info.codec,
     )
 
 

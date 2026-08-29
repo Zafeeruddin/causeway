@@ -8,10 +8,13 @@ Between them: an ffmpeg the agent starts *inside* the namespace, which copies
 the stream out to MediaMTX over the namespace's control route, and MediaMTX,
 which turns it into WebRTC the browser can play.
 
-Nothing is transcoded and nothing is written to disk. A preview costs one copy
-of a stream that is already arriving, and it stops as soon as the last viewer
-closes the tab -- which matters, because cameras cap concurrent sessions hard
-and a preview left running is a session a recording cannot have.
+Nothing is written to disk, and nothing is transcoded unless the camera leaves
+no choice: an H.265 source is recordable but no mainstream browser will decode
+it over WebRTC, so those and only those are re-encoded on the way through. A
+preview otherwise costs one copy of a stream that is already arriving, and it
+stops as soon as the last viewer closes the tab -- which matters, because
+cameras cap concurrent sessions hard and a preview left running is a session a
+recording cannot have.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.enums import SourceKind
 from app.models import Camera, CameraSource
-from app.recorder.ffmpeg import publish_argv
+from app.recorder.ffmpeg import needs_transcode, publish_argv
 from app.recorder.session import SourcePath
 from app.services.connections import ConnectionService
 from app.services.mediamtx import MediaMtx, MediaMtxError
@@ -185,8 +188,12 @@ class PreviewManager:
         except MediaMtxError as exc:
             raise PreviewError(exc.user_message) from exc
 
+        # The probe already recorded what this camera sends, so the decision is
+        # made before ffmpeg starts rather than discovered by a browser that
+        # negotiates, agrees on nothing, and shows black.
+        transcode = needs_transcode(source.codec or "")
         process = await opened.runner.spawn(
-            publish_argv(opened.url, SourceKind(source.kind), target)
+            publish_argv(opened.url, SourceKind(source.kind), target, transcode=transcode)
         )
         started = datetime.now(UTC)
         live = _Live(
@@ -234,6 +241,10 @@ class PreviewManager:
             with contextlib.suppress(MediaMtxError):
                 state = await self.mediamtx.state(name)
                 if state is not None and state.ready:
+                    # MediaMTX only knows the codec once the publisher has sent
+                    # a track, so this is the first moment it can be told, and
+                    # the browser needs it before it negotiates.
+                    live.info.codec = next(iter(state.tracks), "")
                     return
             await asyncio.sleep(0.4)
         raise PreviewError(

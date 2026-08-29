@@ -377,6 +377,10 @@ class PreviewOut(BaseModel):
     started_at: datetime
     expires_at: datetime
     viewers: int = 0
+    #: The codec the camera is sending. The browser cannot find this out until
+    #: it has negotiated, and a codec it cannot decode fails there as a black
+    #: frame -- so it is told in advance and can say so instead.
+    codec: str = ""
 
 
 # ---- comparison --------------------------------------------------------

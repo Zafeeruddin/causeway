@@ -83,6 +83,17 @@ export function LivePreview({
         attempt.preview = started;
         setPreview(started);
 
+        const undecodable = codecComplaint(started.codec);
+        if (undecodable) {
+          // WebRTC's own answer to this is to negotiate, agree on nothing, and
+          // hand back a session that stays black. Asking the browser first is
+          // the difference between a reason and a blank rectangle.
+          void api.stopPreview(started.camera_id, started.id).catch(() => {});
+          attempt.preview = null;
+          setView({ phase: "failed", message: undecodable });
+          return;
+        }
+
         const session = await openWhep(started.whep_url, (state) => {
           if (attempt.abandoned) return;
           if (state === "live") setView({ phase: "live" });
@@ -224,6 +235,29 @@ function explain(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof WhepError) return error.message;
   return "The preview could not be started.";
+}
+
+/**
+ * Whether this browser can decode what the camera is sending, and what to say
+ * when it cannot.
+ *
+ * The preview is a stream copy on purpose -- transcoding fifteen cameras to
+ * suit one browser is not free -- so the codec reaching the browser is the
+ * camera's own. H.265 is the common one to trip on: cameras ship it by default
+ * and only Safari and some hardware-accelerated Chrome builds decode it in
+ * WebRTC. Recording is unaffected, which is worth saying, because "preview is
+ * broken" and "this camera is broken" look identical from here.
+ */
+function codecComplaint(codec: string): string {
+  if (!codec) return "";
+  const supported = RTCRtpReceiver.getCapabilities?.("video")?.codecs ?? [];
+  if (!supported.length) return ""; // Nothing to go on; let the negotiation decide.
+  const wanted = `video/${codec}`.toLowerCase();
+  if (supported.some((entry) => entry.mimeType.toLowerCase() === wanted)) return "";
+  return (
+    `This camera streams ${codec}, which this browser cannot decode. ` +
+    "Recording it is unaffected - only watching it live is."
+  );
 }
 
 function untilExpiry(expiresAt: string): string {

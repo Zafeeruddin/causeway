@@ -110,8 +110,27 @@ def capture_argv(
     return argv
 
 
-def publish_argv(url: StreamUrl, kind: SourceKind, target: str) -> list[str]:
-    """Republish a live source to MediaMTX, without re-encoding.
+#: Video codecs a browser will accept over WebRTC without help. H.264 is the
+#: only one a camera is likely to send; the rest are here because a source that
+#: already speaks them needs no more from us than one that speaks H.264.
+BROWSER_CODECS = frozenset({"h264", "avc1", "vp8", "vp9", "av1"})
+
+
+def needs_transcode(codec: str) -> bool:
+    """Whether this source has to be re-encoded to be watchable in a browser.
+
+    Only a codec we have positively identified and know is undeliverable earns
+    the CPU. An unprobed source stays a copy: guessing wrong there spends a core
+    on a stream that would have played, and the player says plainly when a codec
+    turns out to be one it cannot decode.
+    """
+    return bool(codec) and codec.strip().lower() not in BROWSER_CODECS
+
+
+def publish_argv(
+    url: StreamUrl, kind: SourceKind, target: str, *, transcode: bool = False
+) -> list[str]:
+    """Republish a live source to MediaMTX.
 
     This runs *inside* the profile's namespace, because that is the only place
     the camera exists -- and it reaches MediaMTX back out over the namespace's
@@ -120,20 +139,18 @@ def publish_argv(url: StreamUrl, kind: SourceKind, target: str) -> list[str]:
     container's own loopback and is not visible from inside a namespace, so a
     hostname here fails to resolve in a way that looks like the camera is down.
 
-    Copying rather than transcoding keeps a preview close to free; a browser
-    that cannot play the camera's codec is a real possibility, and the honest
-    answer to that is a message rather than fifteen silent transcodes.
+    Copying is the default and keeps a preview close to free. Re-encoding is
+    reserved for sources a browser cannot decode at all -- an H.265 camera is
+    otherwise recordable but unwatchable -- and is deliberately not the standing
+    behaviour: at fifteen concurrent streams, transcoding the ones that did not
+    need it is what would make the machine the limit.
     """
     argv = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning"]
     if kind is SourceKind.RTSP:
         argv += ["-rtsp_transport", "tcp"]
+    argv += ["-fflags", "+genpts", "-i", url.expose()]
+    argv += _transcode_argv() if transcode else ["-c", "copy"]
     argv += [
-        "-fflags",
-        "+genpts",
-        "-i",
-        url.expose(),
-        "-c",
-        "copy",
         "-f",
         "rtsp",
         # The push leg is pinned to TCP for the same reason the pull leg is.
@@ -142,6 +159,35 @@ def publish_argv(url: StreamUrl, kind: SourceKind, target: str) -> list[str]:
         target,
     ]
     return argv
+
+
+def _transcode_argv() -> list[str]:
+    """Re-encode to what every browser can decode, as cheaply as it can be done.
+
+    ``ultrafast`` and ``zerolatency`` because this is a monitor picture, not an
+    archive -- the recording keeps the camera's own bytes and owes nothing to
+    this path. The short keyframe interval is what lets a viewer joining an
+    established stream see a picture in a second rather than waiting for the
+    camera's own interval, which on these cameras can be several seconds. Audio
+    is dropped rather than transcoded to Opus: nothing in the product listens to
+    it, and encoding it would be spending CPU on silence.
+    """
+    return [
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        # Baseline: no B-frames, and the profile every decoder has.
+        "-profile:v",
+        "baseline",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "30",
+    ]
 
 
 def concat_argv(list_file: Path | str, output: Path | str) -> list[str]:
