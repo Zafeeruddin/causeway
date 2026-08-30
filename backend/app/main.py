@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Camera Tunnel Control Plane",
+        title="Causeway",
         version="0.1.0",
         lifespan=lifespan,
         docs_url="/api/docs",

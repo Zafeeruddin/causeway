@@ -1,20 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Camera Tunnel">
-  <title>Camera Tunnel</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Causeway">
+  <title>Causeway</title>
   <!--
-    A lens at the end of a tunnel: three arches receding to an aperture.
+    A raised road on arches, crossing water, with a lens at the far end.
 
-    The arches are the hops - VPN, jump host, forward - and they get smaller and
-    dimmer with distance, which is the product in one picture: the camera is far
-    away and reached through a narrowing path. Stroked rather than filled so it
-    survives at 16px, and monochrome apart from the lens so it reads on a light
-    or a dark tab.
+    The arches are the hops (VPN, jump host, forward) and the deck laid across
+    them is the point: the far side has not moved, there is simply a way to
+    reach it now.
+
+    Explicit colours rather than currentColor. An SVG loaded through an img
+    tag, which is how GitHub renders one, is an isolated document: the
+    surrounding `color` never reaches it and currentColor falls back to black,
+    so on a dark README the logo would be invisible. This mid-slate reads on
+    white and on GitHub's near-black alike; only the lens takes the accent.
+
+    (Note for anyone editing: a double hyphen cannot appear inside an XML
+    comment. It is legal prose and an illegal SVG file.)
   -->
-  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 56V30a28 28 0 0 1 56 0v26" stroke-width="4" opacity=".28"/>
-    <path d="M13 56V32a19 19 0 0 1 38 0v24" stroke-width="4" opacity=".55"/>
-    <path d="M22 56V34a10 10 0 0 1 20 0v22" stroke-width="4"/>
+  <g fill="none" stroke="#7d94a3" stroke-linecap="round" stroke-linejoin="round">
+    <!-- the deck -->
+    <path d="M2 30h60" stroke-width="4.5"/>
+    <!-- piers and arches beneath it -->
+    <path d="M12 30v10a8 8 0 0 0 16 0V30" stroke-width="3" opacity=".75"/>
+    <path d="M36 30v10a8 8 0 0 0 16 0V30" stroke-width="3" opacity=".75"/>
+    <!-- water -->
+    <path d="M2 52q6-3 12 0t12 0 12 0 12 0 12 0" stroke-width="2.5" opacity=".55"/>
+    <path d="M2 59q6-3 12 0t12 0 12 0 12 0 12 0" stroke-width="2.5" opacity=".3"/>
   </g>
-  <!-- The camera itself: what the tunnel is for. -->
-  <circle cx="32" cy="36" r="5.5" fill="#79b7d8"/>
-  <circle cx="32" cy="36" r="10.5" fill="none" stroke="#79b7d8" stroke-width="2.5" opacity=".45"/>
+  <!-- what is on the far side: the camera the road was built to reach -->
+  <circle cx="52" cy="14" r="5" fill="#79b7d8"/>
+  <circle cx="52" cy="14" r="9.5" fill="none" stroke="#79b7d8" stroke-width="2.2" opacity=".4"/>
 </svg>

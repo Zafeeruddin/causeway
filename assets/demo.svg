@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" width="960" height="430"
-     role="img" aria-label="Camera Tunnel walking its eight connection gates, then playing a live preview">
-  <title>Camera Tunnel — connecting and previewing a camera</title>
+     role="img" aria-label="Causeway walking its eight connection gates, then playing a live preview">
+  <title>Causeway — connecting and previewing a camera</title>
   <desc>
     The eight gates run in order: VPN dial, certificate trust, whitelist, route to
     the jump host, SSH authentication, port forward, camera reachable, stream
@@ -55,7 +55,7 @@
 
   <!-- title bar -->
   <g class="f">
-    <text x="28" y="36" fill="#79b7d8" font-size="11" letter-spacing="2.4">CAMERA TUNNEL</text>
+    <text x="28" y="36" fill="#79b7d8" font-size="11" letter-spacing="2.4">CAUSEWAY</text>
     <text x="28" y="58" fill="#e6eef3" font-size="17" font-weight="600">Gate 1 – North</text>
     <text x="28" y="78" fill="#7d919e" font-size="12">Acme Logistics · VPN + jump host · 10.20.30.42</text>
   </g>

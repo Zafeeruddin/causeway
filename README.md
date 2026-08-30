@@ -2,9 +2,11 @@
 
 <img src="assets/logo.svg" alt="" width="88" height="88">
 
-# Camera Tunnel
+# Causeway
 
-**Reach, watch and record cameras that live on a network you are not on.**
+**A road to cameras you cannot otherwise reach.**
+
+Watch them live, record them, and know which hop failed when one does.
 
 [![version](https://img.shields.io/badge/version-0.2.0-79b7d8)](CHANGELOG.md)
 [![tests](https://img.shields.io/badge/tests-267%20passing-4c9a6a)](backend/tests)
@@ -24,9 +26,10 @@ host, then on an address only that jump host can route to. Getting a picture out
 of one is a chain of four or five hops, any of which can fail, and when it does
 the usual answer is "it isn't working" with no indication of which hop.
 
-Camera Tunnel makes that chain a first-class thing: eight named gates, walked in
-order, each reporting for itself. A hop a profile does not use is shown as
-**skipped**, not hidden, so *not needed* never looks like *never checked*.
+Causeway is the road laid across that gap. The chain becomes a first-class
+thing: eight named gates, walked in order, each reporting for itself. A hop a
+profile does not use is shown as **skipped**, not hidden, so *not needed* never
+looks like *never checked*.
 
 ```
   VPN dial → certificate trust → whitelist → route to jump host
@@ -84,7 +87,7 @@ which one you are having.
 ## Quick start
 
 ```bash
-git clone https://github.com/Zafeeruddin/camtunnel && cd camtunnel
+git clone https://github.com/Zafeeruddin/causeway && cd causeway
 cp .env.example .env          # then edit: secrets, storage, PREVIEW_HOST
 docker compose up -d --build
 docker compose exec api cam init-db

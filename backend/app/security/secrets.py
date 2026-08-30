@@ -70,7 +70,7 @@ class SealedColumnBackend:
                 'python -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"'
             )
         # Dev only, and deliberately constant so a restart doesn't orphan local data.
-        return b"cam-dashboard-development-key-32"
+        return b"causeway-development-key-32"
 
     async def put(self, value: str, *, hint: str = "") -> str:
         sealed = self._box.encrypt(value.encode())

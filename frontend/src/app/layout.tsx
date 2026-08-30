@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Camera Tunnel Control Plane",
+  title: "Causeway",
   description: "Reach, preview and record cameras on restricted networks.",
 };
 
