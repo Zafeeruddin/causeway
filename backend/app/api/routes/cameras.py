@@ -74,7 +74,11 @@ async def create_camera(
     await _check_profile(db, principal, body.team_id, body.profile_id)
 
     camera = Camera(
-        team_id=body.team_id, profile_id=body.profile_id, name=body.name, location=body.location
+        team_id=body.team_id,
+        profile_id=body.profile_id,
+        name=body.name,
+        ref=body.ref.strip(),
+        location=body.location,
     )
     secrets = secrets_backend()
     for entry in body.sources:
@@ -307,6 +311,7 @@ async def _persist(
     previews = [
         ImportPreview(
             name=c.name,
+            ref=c.ref,
             location=c.location,
             sources=[
                 {"kind": s.kind, "url": s.url, "host": s.host, "port": s.port} for s in c.sources
@@ -364,6 +369,7 @@ async def _to_model(secrets, team_id: str, profile_id: str, parsed: ParsedCamera
         team_id=team_id,
         profile_id=profile_id,
         name=parsed.name,
+        ref=parsed.ref,
         location=parsed.location,
     )
     for source in parsed.sources:

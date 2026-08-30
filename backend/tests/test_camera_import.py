@@ -43,6 +43,47 @@ def test_an_escaped_username_survives_the_same_trip():
     assert source.username == "user@site"
 
 
+def test_an_id_and_a_name_are_two_different_things():
+    """`id` used to be an alias for `name`, which is how every imported camera
+    ended up called after its own address."""
+    report = parse_pasted("CAM-14, North gate, rtsp://10.0.0.42:554/s1")
+
+    camera = report.cameras[0]
+    assert camera.ref == "CAM-14"
+    assert camera.name == "North gate"
+
+
+def test_one_field_before_the_url_is_still_a_name():
+    """Every list pasted before today had this shape; it has to keep working."""
+    report = parse_pasted("North gate, rtsp://10.0.0.42:554/s1")
+    assert report.cameras[0].name == "North gate"
+    assert report.cameras[0].ref == ""
+
+
+def test_a_bare_url_gets_a_name_worth_reading():
+    """An address alone is a poor name: a list of them is unreadable and none of
+    them says which door it points at."""
+    report = parse_pasted("CAM-14,,rtsp://10.0.0.42:554/Streaming/Channels/101")
+    assert report.cameras[0].ref == "CAM-14"
+
+    plain = parse_pasted("rtsp://10.0.0.42:554/s1").cameras[0]
+    assert plain.name == "10.0.0.42 · s1"
+
+
+def test_a_csv_keeps_the_id_column_out_of_the_name():
+    report = parse_csv(
+        "id,name,rtsp_url\n"
+        "CAM-14,North gate,rtsp://10.0.0.42:554/s1\n"
+        "CAM-15,,rtsp://10.0.0.43:554/s1\n"
+    )
+    first, second = report.cameras
+    assert (first.ref, first.name) == ("CAM-14", "North gate")
+    # No name given, so one is built -- and it leads with the identifier the
+    # customer actually uses rather than the address.
+    assert second.ref == "CAM-15"
+    assert second.name.startswith("CAM-15 · 10.0.0.43")
+
+
 def test_the_default_rtsp_port_is_filled_in():
     assert parse_source_url("rtsp://10.0.0.42/stream1").port == 554
 

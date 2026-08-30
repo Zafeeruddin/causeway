@@ -27,6 +27,14 @@ webrtcLocalUDPAddress: :8189
 # sets it from PREVIEW_HOST as MTX_WEBRTCADDITIONALHOSTS (comma-separated), so a
 # deployment does not have to edit this file.
 webrtcAdditionalHosts: []
+# Do not advertise the container's own interface addresses. 127.0.0.1 and the
+# 172.x bridge address are unreachable from any browser but the one running on
+# this machine, and offering them is not free: ICE works through the candidate
+# list, and every dead one costs a round of connectivity checks before the real
+# address is tried. Measured at roughly five seconds of "Connecting..." with
+# them in, well under one with them out. What remains is exactly the set in
+# webrtcAdditionalHosts, which is the set someone deliberately named.
+webrtcIPsFromInterfaces: no
 
 hls: yes
 hlsAddress: :8888

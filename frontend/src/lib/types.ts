@@ -53,6 +53,8 @@ export interface Camera {
   /** How this camera is reached, carried here so a viewer -- who is not allowed
    *  near the profiles API -- still gets a label on the row. */
   profile_name: string; profile_mode: ReachMode | null;
+  /** The customer's own identifier -- NVR channel, asset tag. Not ours. */
+  ref: string;
   location: string; is_enabled: boolean; sources: Source[];
 }
 
@@ -76,7 +78,10 @@ export interface Preview {
 export interface ImportIssue { line: number; value: string; reason: string }
 export interface ImportResult {
   summary: string; created: number; dry_run: boolean;
-  cameras: { name: string; location: string; sources: { kind: SourceKind; url: string }[] }[];
+  cameras: {
+    name: string; ref: string; location: string;
+    sources: { kind: SourceKind; url: string }[];
+  }[];
   duplicates: ImportIssue[]; rejected: ImportIssue[];
 }
 

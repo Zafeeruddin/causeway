@@ -66,7 +66,7 @@ export interface ProfileInput {
 }
 
 export interface CameraInput {
-  team_id: string; profile_id: string; name: string; location?: string;
+  team_id: string; profile_id: string; name: string; ref?: string; location?: string;
   sources: { kind: SourceKind; url: string; username?: string; password?: string }[];
 }
 

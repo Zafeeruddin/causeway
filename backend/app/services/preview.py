@@ -300,7 +300,10 @@ class PreviewManager:
                     # the browser needs it before it negotiates.
                     live.info.codec = next(iter(state.tracks), "")
                     return
-            await asyncio.sleep(0.4)
+            # Tight, because this poll is in front of the user: a 0.4s interval
+            # adds up to that much dead time after the stream is already live,
+            # and the call it makes is a local HTTP GET against MediaMTX.
+            await asyncio.sleep(0.15)
         raise PreviewError(
             _why(live) or "the camera did not start sending video within the time allowed"
         )
