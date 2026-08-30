@@ -12,3 +12,7 @@ node_modules/
 /data/
 /recordings/
 *.sock
+
+# Incremental build state, rewritten on every `tsc` run and committed by
+# accident every time someone stages the whole tree.
+frontend/tsconfig.tsbuildinfo
