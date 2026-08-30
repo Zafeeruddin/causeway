@@ -13,5 +13,13 @@ RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
 COPY app ./app
 
 ENV PATH="/srv/.venv/bin:$PATH" PYTHONUNBUFFERED=1
+
+# `uv sync` runs before the source is copied -- so the layer cache survives a
+# code-only change -- which means the project itself is never installed and the
+# `cam` console script pyproject declares is never generated. The module is on
+# sys.path regardless, so a two-line shim gives the documented command a real
+# entry point without paying for a second dependency resolution.
+RUN printf '#!/bin/sh\nexec python -m app.cli "$@"\n' > /usr/local/bin/cam \
+    && chmod +x /usr/local/bin/cam
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -95,6 +95,37 @@ async def test_a_gateway_pasted_with_its_port_is_split_into_the_two_fields(as_me
     assert body["vpn_port"] == 20443
 
 
+async def test_pasted_credentials_lose_the_whitespace_they_arrived_with(as_member, seeded):
+    """A leading space in a VPN username is invisible in the form and comes back
+    from the gateway as "check the username and password" -- which sends the
+    reader to look at the password, where nothing is wrong."""
+    response = await as_member.post(
+        "/api/profiles",
+        json=_profile_body(
+            seeded["acme"],
+            vpn_gateway="  82.197.58.159:20443 ",
+            vpn_username=" Master-works",
+            jump_host="10.20.30.71\n",
+            jump_username="ubuntu ",
+        ),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["vpn_username"] == "Master-works"
+    assert body["vpn_gateway"] == "82.197.58.159"
+    assert body["vpn_port"] == 20443, "the port survived the surrounding spaces"
+    assert body["jump_host"] == "10.20.30.71"
+    assert body["jump_username"] == "ubuntu"
+
+
+async def test_an_edit_trims_too(as_member, seeded, direct_profile):
+    response = await as_member.patch(
+        f"/api/profiles/{direct_profile}", json={"vpn_username": "  someone  "}
+    )
+    assert response.status_code == 200
+    assert response.json()["vpn_username"] == "someone"
+
+
 async def test_a_gateway_without_a_port_keeps_the_one_it_was_given(as_member, seeded):
     response = await as_member.post(
         "/api/profiles",

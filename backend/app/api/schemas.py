@@ -92,6 +92,25 @@ class MembershipRequest(BaseModel):
 # ---- connection profiles -----------------------------------------------
 
 
+#: Fields that are addresses or account names, never prose. Every one of them
+#: gets pasted, and a paste brings its surroundings: a leading space in a VPN
+#: username is invisible in the form and comes back from the gateway as "check
+#: the username and password", which sends the reader looking at the password.
+_PASTED = (
+    "vpn_gateway",
+    "vpn_username",
+    "vpn_realm",
+    "jump_host",
+    "jump_username",
+    "whitelist_url",
+)
+
+
+def strip_pasted(value: str | None) -> str | None:
+    """Trim a field whose value came off someone's clipboard."""
+    return value.strip() if isinstance(value, str) else value
+
+
 def split_gateway(value: str) -> tuple[str, int | None]:
     """Separate a pasted ``host:port`` into the two fields we store.
 
@@ -154,6 +173,11 @@ class ProfileCreate(BaseModel):
             raise ValueError("this mode needs a jump host address")
         return value
 
+    @field_validator(*_PASTED, mode="before")
+    @classmethod
+    def _trim(cls, value):
+        return strip_pasted(value)
+
     @model_validator(mode="after")
     def _gateway_port_may_arrive_attached(self) -> ProfileCreate:
         host, port = split_gateway(self.vpn_gateway)
@@ -179,6 +203,11 @@ class ProfileUpdate(BaseModel):
     jump_password: str | None = None
     jump_private_key: str | None = None
     whitelist_url: str | None = None
+
+    @field_validator(*_PASTED, mode="before")
+    @classmethod
+    def _trim(cls, value):
+        return strip_pasted(value)
 
     @model_validator(mode="after")
     def _gateway_port_may_arrive_attached(self) -> ProfileUpdate:
