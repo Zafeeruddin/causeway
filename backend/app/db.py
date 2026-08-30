@@ -16,6 +16,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.enums import Role
 
 _engine = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -56,25 +57,45 @@ T = TypeVar("T")
 
 
 class Principal:
-    """Who is asking. Carries the team set so scoping needs no extra lookup."""
+    """Who is asking. Carries the role and team set so scoping needs no lookup.
 
-    def __init__(self, user_id: str, is_admin: bool, team_ids: set[str]) -> None:
+    Two questions get asked of this all over the API and they are not the same
+    one: *may they see it* and *may they change it*. A viewer sees every camera
+    in their teams and may change none of them, so a single "is this yours"
+    predicate cannot answer both -- which is exactly the mistake that puts a
+    delete button in front of someone who should not have one.
+    """
+
+    def __init__(self, user_id: str, role: Role, team_ids: set[str]) -> None:
         self.user_id = user_id
-        self.is_admin = is_admin
+        self.role = role
         self.team_ids = team_ids
 
+    @property
+    def is_superadmin(self) -> bool:
+        return self.role is Role.SUPERADMIN
+
+    @property
+    def may_administer(self) -> bool:
+        """Whether they administer anything anywhere. Not a licence over a team."""
+        return self.role.may_administer
+
     def may_see(self, team_id: str | None) -> bool:
-        return self.is_admin or (team_id is not None and team_id in self.team_ids)
+        return self.is_superadmin or (team_id is not None and team_id in self.team_ids)
+
+    def may_administer_team(self, team_id: str | None) -> bool:
+        """Membership is not enough: a viewer belongs to the team too."""
+        return self.is_superadmin or (self.may_administer and self.may_see(team_id))
 
 
 def scoped(stmt: Select[Any], model: Any, principal: Principal) -> Select[Any]:
     """Restrict a query to what ``principal`` is allowed to see.
 
-    An admin sees everything. A member sees the union of their teams. A member
-    with no teams sees nothing -- which is the correct answer, and the reason
-    this returns a false predicate rather than the unfiltered query.
+    A superadmin sees everything. Everyone else sees the union of their teams,
+    and someone with no teams sees nothing -- which is the correct answer, and
+    the reason this returns a false predicate rather than the unfiltered query.
     """
-    if principal.is_admin:
+    if principal.is_superadmin:
         return stmt
     if not principal.team_ids:
         return stmt.where(model.team_id.is_(None) & model.team_id.is_not(None))

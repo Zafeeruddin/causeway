@@ -5,12 +5,26 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { useLive } from "@/lib/useLive";
-import type { Me } from "@/lib/types";
+import { administers, type Me } from "@/lib/types";
 import { Button, Dot, cx } from "@/components/ui";
 
+/**
+ * What each role is shown.
+ *
+ * Viewers are not given Overview and Connections and then stopped at the door:
+ * the sections are absent. Most of the people using this are here to watch a
+ * camera and take a clip away, and a menu full of gateways, jump hosts and
+ * storage thresholds is not a permission problem for them, it is a confusion
+ * one. The server enforces the same boundary either way.
+ */
 const NAV = [
   { href: "/", label: "Overview" },
   { href: "/profiles", label: "Connections" },
+  { href: "/cameras", label: "Cameras" },
+  { href: "/recordings", label: "Recordings" },
+];
+
+const VIEWER_NAV = [
   { href: "/cameras", label: "Cameras" },
   { href: "/recordings", label: "Recordings" },
 ];
@@ -44,7 +58,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
   if (!me) return null;
 
-  const nav = me.role === "admin" ? [...NAV, { href: "/admin", label: "Admin" }] : NAV;
+  const nav = !administers(me.role)
+    ? VIEWER_NAV
+    : [...NAV, { href: "/admin", label: "Admin" }];
 
   return (
     <div className="min-h-screen">

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, modeLabel } from "@/lib/format";
-import type { Camera, Gate, ImportResult, Me, Profile, Source } from "@/lib/types";
+import { administers, type Camera, type Gate, type ImportResult, type Me, type Profile, type Source } from "@/lib/types";
 import { GateLadder } from "@/components/GateLadder";
 import { LivePreview } from "@/components/LivePreview";
 import {
@@ -30,10 +30,19 @@ export default function CamerasPage() {
   }, []);
 
   useEffect(() => {
-    api.me().then(setMe).catch(() => {});
-    api.profiles().then(setProfiles).catch(() => {});
+    api
+      .me()
+      .then((who) => {
+        setMe(who);
+        // Viewers are refused this endpoint, and asking anyway would put a 403
+        // in their console on every visit. The row's label comes off the camera.
+        if (administers(who.role)) api.profiles().then(setProfiles).catch(() => {});
+      })
+      .catch(() => {});
     load().catch(() => {});
   }, [load]);
+
+  const mayManage = me ? administers(me.role) : false;
 
   async function test(camera: Camera) {
     setTesting(camera.id);
@@ -74,9 +83,11 @@ export default function CamerasPage() {
           >
             Record {selection.size ? `${selection.size} selected` : ""}
           </Button>
-          <Button variant="primary" onClick={() => setAdding(true)}>
-            Add cameras
-          </Button>
+          {mayManage ? (
+            <Button variant="primary" onClick={() => setAdding(true)}>
+              Add cameras
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -86,11 +97,17 @@ export default function CamerasPage() {
         <Card>
           <Empty
             title="No cameras yet"
-            hint="Add one at a time, paste a block of RTSP URLs, or upload a CSV exported from your NVR."
+            hint={
+              mayManage
+                ? "Add one at a time, paste a block of RTSP URLs, or upload a CSV exported from your NVR."
+                : "An administrator of your team adds cameras here."
+            }
             action={
-              <Button variant="primary" onClick={() => setAdding(true)}>
-                Add cameras
-              </Button>
+              mayManage ? (
+                <Button variant="primary" onClick={() => setAdding(true)}>
+                  Add cameras
+                </Button>
+              ) : null
             }
           />
         </Card>
@@ -100,7 +117,7 @@ export default function CamerasPage() {
             <CameraRow
               key={camera.id}
               camera={camera}
-              profile={profiles.find((p) => p.id === camera.profile_id)}
+              mayManage={mayManage}
               gates={gates[camera.id] ?? []}
               testing={testing === camera.id}
               selected={selection.has(camera.id)}
@@ -154,10 +171,10 @@ export default function CamerasPage() {
 }
 
 function CameraRow({
-  camera, profile, gates, testing, selected, onToggle, onPreview, onTest, onDelete,
+  camera, mayManage, gates, testing, selected, onToggle, onPreview, onTest, onDelete,
 }: {
   camera: Camera;
-  profile?: Profile;
+  mayManage: boolean;
   gates: Gate[];
   testing: boolean;
   selected: boolean;
@@ -184,7 +201,9 @@ function CameraRow({
           <p className="truncate text-sm font-medium">{camera.name}</p>
           <p className="truncate text-xs text-fg-3">
             {camera.location ? `${camera.location} · ` : ""}
-            {profile ? `${profile.name} (${modeLabel(profile.mode)})` : "no profile"}
+            {camera.profile_name
+              ? `${camera.profile_name}${camera.profile_mode ? ` (${modeLabel(camera.profile_mode)})` : ""}`
+              : "no profile"}
           </p>
         </div>
 
@@ -198,15 +217,19 @@ function CameraRow({
           <Button size="sm" onClick={onPreview} disabled={!camera.sources.length}>
             Preview
           </Button>
-          <Button size="sm" onClick={onTest} disabled={testing}>
-            {testing ? "Testing…" : "Test"}
-          </Button>
+          {mayManage ? (
+            <Button size="sm" onClick={onTest} disabled={testing}>
+              {testing ? "Testing…" : "Test"}
+            </Button>
+          ) : null}
           <Button size="sm" variant="quiet" onClick={() => setOpen((v) => !v)}>
             {open ? "Hide" : "Details"}
           </Button>
-          <Button size="sm" variant="danger" onClick={onDelete}>
-            Remove
-          </Button>
+          {mayManage ? (
+            <Button size="sm" variant="danger" onClick={onDelete}>
+              Remove
+            </Button>
+          ) : null}
         </div>
       </div>
 

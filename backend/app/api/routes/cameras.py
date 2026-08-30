@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import current_principal
-from app.api.deps import NOT_FOUND, gateway, load_camera, previews
+from app.api.deps import NOT_FOUND, deny_unless_team_admin, gateway, load_camera, previews
 from app.api.schemas import (
     CameraCreate,
     CameraOut,
@@ -25,6 +25,7 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.db import Principal, get_session, scoped_select
+from app.enums import ReachMode
 from app.models import Camera, CameraSource, ConnectionProfile
 from app.security.secrets import secrets_backend
 from app.services.audit import record
@@ -49,9 +50,19 @@ async def list_cameras(
     db: AsyncSession = Depends(get_session), principal: Principal = Depends(current_principal)
 ) -> list[CameraOut]:
     rows = await db.execute(
-        scoped_select(Camera, principal).options(selectinload(Camera.sources)).order_by(Camera.name)
+        scoped_select(Camera, principal)
+        .options(selectinload(Camera.sources), selectinload(Camera.profile))
+        .order_by(Camera.name)
     )
-    return [CameraOut.model_validate(c) for c in rows.scalars().all()]
+    return [_camera_out(c) for c in rows.scalars().all()]
+
+
+def _camera_out(camera: Camera) -> CameraOut:
+    out = CameraOut.model_validate(camera)
+    if camera.profile is not None:
+        out.profile_name = camera.profile.name
+        out.profile_mode = ReachMode(camera.profile.mode)
+    return out
 
 
 @router.post("", response_model=CameraOut, status_code=status.HTTP_201_CREATED)
@@ -97,7 +108,7 @@ async def create_camera(
             status.HTTP_409_CONFLICT, f"This team already has a camera named {body.name!r}."
         ) from exc
 
-    await db.refresh(camera, ["sources"])
+    await db.refresh(camera, ["sources", "profile"])
     await record(
         db,
         principal,
@@ -107,7 +118,7 @@ async def create_camera(
         {"sources": [s.kind for s in camera.sources]},
         team_id=camera.team_id,
     )
-    return CameraOut.model_validate(camera)
+    return _camera_out(camera)
 
 
 @router.post("/import", response_model=ImportResponse)
@@ -151,7 +162,13 @@ async def test_camera(
     principal: Principal = Depends(current_principal),
     service: ConnectionGateway = Depends(gateway),
 ) -> list[GateResultOut]:
-    """Run the source gates for every source on this camera."""
+    """Run the source gates for every source on this camera.
+
+    An administrator's tool: it dials the profile, opens a forward and probes
+    the camera, and the eight-rung answer it gives back is about the plumbing
+    rather than about the picture.
+    """
+    deny_unless_team_admin(principal, camera.team_id)
     profile = await db.get(ConnectionProfile, camera.profile_id)
     if profile is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This camera has no connection profile.")
@@ -246,6 +263,7 @@ async def delete_camera(
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(current_principal),
 ) -> None:
+    deny_unless_team_admin(principal, camera.team_id)
     await db.delete(camera)
     await db.flush()
     await record(db, principal, "camera.delete", "camera", camera.id, team_id=camera.team_id)
@@ -257,8 +275,12 @@ async def delete_camera(
 async def _check_profile(
     db: AsyncSession, principal: Principal, team_id: str, profile_id: str
 ) -> ConnectionProfile:
-    if not principal.may_see(team_id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    """The gate every way of adding a camera passes through.
+
+    Adding cameras is administration: it decides what the team records and what
+    it pays for in storage. Viewers watch what is already here.
+    """
+    deny_unless_team_admin(principal, team_id)
     profile = await db.get(ConnectionProfile, profile_id)
     if profile is None or profile.team_id != team_id:
         raise HTTPException(

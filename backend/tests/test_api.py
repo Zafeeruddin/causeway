@@ -446,12 +446,179 @@ async def test_the_estimate_endpoint_answers_before_anyone_presses_record(
     assert 300_000_000 < body["estimated_bytes"] < 400_000_000
 
 
+# ---- who may do what ---------------------------------------------------
+
+
+async def _login(client, email: str, password: str) -> None:
+    """Swap identity on the shared client mid-test.
+
+    The permission tests all have the same shape -- an administrator sets
+    something up, and then someone else tries to touch it -- and both halves
+    need the same app and database.
+    """
+    response = await client.post("/api/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200
+
+
+async def _a_camera(client, seeded, profile_id: str, name: str = "Gate") -> str:
+    created = await client.post(
+        "/api/cameras",
+        json={
+            "team_id": seeded["acme"],
+            "profile_id": profile_id,
+            "name": name,
+            "sources": [{"kind": "rtsp", "url": "rtsp://10.20.30.42:554/s1"}],
+        },
+    )
+    assert created.status_code == 201
+    return created.json()["id"]
+
+
+async def test_a_viewer_sees_their_teams_cameras(as_member, seeded, direct_profile):
+    """The whole point of the role: everything they need to watch a camera, and
+    nothing about how the camera is reached."""
+    camera_id = await _a_camera(as_member, seeded, direct_profile)
+    await _login(as_member, "watch@example.com", "viewer-password")
+
+    listed = await as_member.get("/api/cameras")
+    assert listed.status_code == 200
+    row = next(c for c in listed.json() if c["id"] == camera_id)
+    # The profile's name travels on the camera, so the label survives without
+    # the viewer being allowed anywhere near the profiles API.
+    assert row["profile_name"] == "Direct"
+
+
+async def test_a_viewer_may_not_change_the_cameras_they_watch(as_member, seeded, direct_profile):
+    camera_id = await _a_camera(as_member, seeded, direct_profile)
+    await _login(as_member, "watch@example.com", "viewer-password")
+
+    assert (await as_member.delete(f"/api/cameras/{camera_id}")).status_code == 403
+    assert (await as_member.post(f"/api/cameras/{camera_id}/test")).status_code == 403
+    created = await as_member.post(
+        "/api/cameras",
+        json={
+            "team_id": seeded["acme"],
+            "profile_id": direct_profile,
+            "name": "Sneaky",
+            "sources": [{"kind": "rtsp", "url": "rtsp://10.20.30.43:554/s1"}],
+        },
+    )
+    assert created.status_code == 403
+    imported = await as_member.post(
+        "/api/cameras/import",
+        json={
+            "team_id": seeded["acme"],
+            "profile_id": direct_profile,
+            "text": "rtsp://10.20.30.44:554/s1",
+        },
+    )
+    assert imported.status_code == 403
+
+
+async def test_a_viewer_cannot_reach_connection_profiles_at_all(as_member, seeded, direct_profile):
+    """Not read-only -- absent. A profile is gateways, jump hosts and a dial
+    that holds a VPN open for the whole team."""
+    await _login(as_member, "watch@example.com", "viewer-password")
+
+    assert (await as_member.get("/api/profiles")).status_code == 403
+    assert (await as_member.get(f"/api/profiles/{direct_profile}")).status_code == 403
+    assert (await as_member.post(f"/api/profiles/{direct_profile}/connect")).status_code == 403
+    assert (await as_member.delete(f"/api/profiles/{direct_profile}")).status_code == 403
+
+
+async def test_a_viewer_may_still_record_and_take_the_file(as_member, seeded, direct_profile):
+    """Watching, recording and downloading are the job. Withholding them would
+    leave the role with nothing to do."""
+    camera_id = await _a_camera(as_member, seeded, direct_profile)
+    await _login(as_member, "watch@example.com", "viewer-password")
+
+    estimate = await as_member.post(
+        "/api/recordings/estimate", json={"camera_ids": [camera_id], "seconds": 60}
+    )
+    assert estimate.status_code == 200
+    started = await as_member.post(
+        "/api/recordings", json={"camera_ids": [camera_id], "seconds": 60}
+    )
+    assert started.status_code == 202
+
+
+async def test_an_admin_administers_their_own_teams_and_no_others(as_member, seeded):
+    """`may_administer` says they administer something; it never says which."""
+    other_team = seeded["ops"]
+
+    made = await as_member.post(
+        "/api/profiles",
+        json={"team_id": other_team, "name": "Theirs", "mode": ReachMode.DIRECT.value},
+    )
+    assert made.status_code == 404, "an admin reached into a team they are not in"
+
+    added = await as_member.post(
+        f"/api/admin/teams/{other_team}/members", json={"user_id": seeded["viewer"]}
+    )
+    assert added.status_code == 404
+
+
+async def test_an_admin_sees_only_their_own_teams_and_people(as_member, as_admin, seeded):
+    everything = await as_admin.get("/api/admin/teams")
+    assert {t["slug"] for t in everything.json()} == {"acme", "ops"}
+
+    await _login(as_admin, "qa@example.com", "member-password")
+    mine = await as_admin.get("/api/admin/teams")
+    assert {t["slug"] for t in mine.json()} == {"acme"}
+
+    people = await as_admin.get("/api/admin/users")
+    assert {u["email"] for u in people.json()} == {"qa@example.com", "watch@example.com"}
+
+
+async def test_an_admin_cannot_create_an_account_above_their_own_reach(as_member, seeded):
+    """Otherwise the shortest path to superadmin is to make one."""
+    promoted = await as_member.post(
+        "/api/admin/users",
+        json={
+            "email": "climber@example.com",
+            "password": "a-long-enough-password",
+            "role": "superadmin",
+            "team_ids": [seeded["acme"]],
+        },
+    )
+    assert promoted.status_code == 403
+
+    homeless = await as_member.post(
+        "/api/admin/users",
+        json={"email": "nowhere@example.com", "password": "a-long-enough-password", "role": "viewer"},
+    )
+    assert homeless.status_code == 422, "an account its creator could not then see"
+
+    elsewhere = await as_member.post(
+        "/api/admin/users",
+        json={
+            "email": "theirs@example.com",
+            "password": "a-long-enough-password",
+            "role": "viewer",
+            "team_ids": [seeded["ops"]],
+        },
+    )
+    assert elsewhere.status_code == 404
+
+    fine = await as_member.post(
+        "/api/admin/users",
+        json={
+            "email": "mine@example.com",
+            "password": "a-long-enough-password",
+            "role": "viewer",
+            "team_ids": [seeded["acme"]],
+        },
+    )
+    assert fine.status_code == 201
+    assert fine.json()["role"] == "viewer"
+
+
 # ---- admin -------------------------------------------------------------
 
 
-async def test_only_admins_reach_the_admin_routes(as_member):
-    assert (await as_member.get("/api/admin/users")).status_code == 403
-    assert (await as_member.get("/api/admin/teams")).status_code == 403
+async def test_a_viewer_reaches_no_admin_route(as_viewer):
+    assert (await as_viewer.get("/api/admin/users")).status_code == 403
+    assert (await as_viewer.get("/api/admin/teams")).status_code == 403
 
 
 async def test_an_admin_can_create_a_team_and_add_a_member(as_admin, seeded):
@@ -486,7 +653,7 @@ async def test_a_duplicate_team_slug_is_a_conflict_not_a_crash(as_admin):
 async def test_creating_a_user_never_returns_a_password_hash(as_admin):
     response = await as_admin.post(
         "/api/admin/users",
-        json={"email": "new@example.com", "password": "a-long-enough-password", "role": "member"},
+        json={"email": "new@example.com", "password": "a-long-enough-password", "role": "viewer"},
     )
     assert response.status_code == 201
     assert "password" not in response.text.lower()

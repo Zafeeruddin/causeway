@@ -1,6 +1,10 @@
 /** Mirrors app/api/schemas.py. Kept hand-written and small rather than generated. */
 
-export type Role = "admin" | "member";
+export type Role = "superadmin" | "admin" | "viewer";
+
+/** Administers something somewhere. Which team is the server's question. */
+export const administers = (role: Role) => role === "superadmin" || role === "admin";
+
 export type ReachMode = "direct" | "vpn_only" | "jump_only" | "vpn_jump";
 export type VpnKind = "none" | "fortinet" | "globalprotect" | "wireguard";
 export type SshAuth = "password" | "key";
@@ -46,6 +50,9 @@ export interface Source {
 
 export interface Camera {
   id: string; team_id: string; profile_id: string; name: string;
+  /** How this camera is reached, carried here so a viewer -- who is not allowed
+   *  near the profiles API -- still gets a label on the row. */
+  profile_name: string; profile_mode: ReachMode | null;
   location: string; is_enabled: boolean; sources: Source[];
 }
 

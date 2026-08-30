@@ -1,4 +1,10 @@
-"""Teams and users. Admin only."""
+"""Teams and users.
+
+Two audiences behind one router. A superadmin owns the deployment and sees all
+of it. An admin owns their own teams and sees exactly those -- the same screen,
+narrowed, rather than a second screen -- so every read here is scoped and every
+write asks which team it is writing to.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +13,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import hash_password, require_admin
+from app.api.auth import hash_password, require_admin, require_superadmin
+from app.api.deps import deny_unless_team_admin
 from app.api.schemas import MembershipRequest, TeamCreate, TeamOut, UserCreate, UserOut
 from app.db import Principal, get_session
+from app.enums import Role
 from app.models import Team, TeamMember, User
 from app.services.audit import record
 
@@ -17,13 +25,22 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 
 
 @router.get("/teams", response_model=list[TeamOut])
-async def list_teams(db: AsyncSession = Depends(get_session)) -> list[TeamOut]:
+async def list_teams(
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_admin),
+) -> list[TeamOut]:
+    """Every team for a superadmin; an admin's own teams for an admin."""
     counts = (
         select(TeamMember.team_id, func.count().label("n")).group_by(TeamMember.team_id).subquery()
     )
-    rows = await db.execute(
-        select(Team, func.coalesce(counts.c.n, 0)).outerjoin(counts, Team.id == counts.c.team_id)
+    query = select(Team, func.coalesce(counts.c.n, 0)).outerjoin(
+        counts, Team.id == counts.c.team_id
     )
+    if not principal.is_superadmin:
+        # `or {""}` so an admin with no teams matches nothing rather than
+        # producing an empty IN () that some backends read as "everything".
+        query = query.where(Team.id.in_(principal.team_ids or {""}))
+    rows = await db.execute(query)
     return [
         TeamOut(
             id=team.id,
@@ -40,8 +57,10 @@ async def list_teams(db: AsyncSession = Depends(get_session)) -> list[TeamOut]:
 async def create_team(
     body: TeamCreate,
     db: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_admin),
+    principal: Principal = Depends(require_superadmin),
 ) -> TeamOut:
+    """Superadmin only: a team is the boundary every other permission is drawn
+    against, so drawing a new one is not something a scoped account can do."""
     team = Team(name=body.name, slug=body.slug, description=body.description)
     db.add(team)
     try:
@@ -55,8 +74,24 @@ async def create_team(
 
 
 @router.get("/users", response_model=list[UserOut])
-async def list_users(db: AsyncSession = Depends(get_session)) -> list[UserOut]:
-    rows = await db.execute(select(User).order_by(User.email))
+async def list_users(
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_admin),
+) -> list[UserOut]:
+    """Everyone, or everyone in the caller's teams.
+
+    An admin manages membership of their own teams, so they need the people in
+    them. They do not need the roster of the whole deployment, and handing it to
+    them is how one team learns another team's staff list.
+    """
+    query = select(User).order_by(User.email)
+    if not principal.is_superadmin:
+        query = query.where(
+            User.id.in_(
+                select(TeamMember.user_id).where(TeamMember.team_id.in_(principal.team_ids or {""}))
+            )
+        )
+    rows = await db.execute(query)
     return [UserOut.model_validate(u) for u in rows.scalars().all()]
 
 
@@ -66,6 +101,27 @@ async def create_user(
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_admin),
 ) -> UserOut:
+    """Create an account.
+
+    A superadmin may create any role and need not place it in a team. An admin
+    may create viewers only, and only into their own teams -- otherwise the
+    quickest route to superadmin is to make one, and an account created into no
+    team would be one its creator could no longer see.
+    """
+    if not principal.is_superadmin:
+        if Role(body.role) is not Role.VIEWER:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Only a superadmin can create an account that is not a viewer.",
+            )
+        if not body.team_ids:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Choose the team this account belongs to.",
+            )
+    for team_id in body.team_ids:
+        deny_unless_team_admin(principal, team_id)
+
     user = User(
         email=body.email.lower().strip(),
         display_name=body.display_name or body.email.split("@")[0],
@@ -77,7 +133,17 @@ async def create_user(
         await db.flush()
     except IntegrityError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, "That email already has an account.") from exc
-    await record(db, principal, "user.create", "user", user.id, {"role": str(user.role)})
+    for team_id in body.team_ids:
+        db.add(TeamMember(team_id=team_id, user_id=user.id))
+    await db.flush()
+    await record(
+        db,
+        principal,
+        "user.create",
+        "user",
+        user.id,
+        {"role": str(user.role), "teams": body.team_ids},
+    )
     return UserOut.model_validate(user)
 
 
@@ -88,6 +154,7 @@ async def add_member(
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_admin),
 ) -> None:
+    deny_unless_team_admin(principal, team_id)
     if await db.get(Team, team_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such team.")
     if await db.get(User, body.user_id) is None:
@@ -111,6 +178,7 @@ async def remove_member(
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_admin),
 ) -> None:
+    deny_unless_team_admin(principal, team_id)
     result = await db.execute(
         select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
     )

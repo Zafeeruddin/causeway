@@ -216,34 +216,46 @@ async def app(sessions, bus):
 
 @pytest_asyncio.fixture
 async def seeded(sessions):
-    """An admin, two teams, and one member who belongs to exactly one of them."""
+    """One of each role, and two teams to draw the boundary with.
+
+    ``member`` and ``viewer`` are both in ACME and differ only in role, which is
+    the pair most of the permission tests need: same team, same cameras, one may
+    change them and one may not.
+    """
     async with sessions() as db:
         admin = User(
             email="admin@example.com",
             display_name="Admin",
             password_hash=hash_password("admin-password"),
-            role=Role.ADMIN,
+            role=Role.SUPERADMIN,
         )
         member = User(
             email="qa@example.com",
             display_name="QA",
             password_hash=hash_password("member-password"),
-            role=Role.MEMBER,
+            role=Role.ADMIN,
         )
         other = User(
             email="ops@example.com",
             display_name="Ops",
             password_hash=hash_password("other-password"),
-            role=Role.MEMBER,
+            role=Role.ADMIN,
+        )
+        viewer = User(
+            email="watch@example.com",
+            display_name="Watcher",
+            password_hash=hash_password("viewer-password"),
+            role=Role.VIEWER,
         )
         acme = Team(name="ACME", slug="acme")
         ops = Team(name="Ops", slug="ops")
-        db.add_all([admin, member, other, acme, ops])
+        db.add_all([admin, member, other, viewer, acme, ops])
         await db.flush()
         db.add_all(
             [
                 TeamMember(team_id=acme.id, user_id=member.id),
                 TeamMember(team_id=ops.id, user_id=other.id),
+                TeamMember(team_id=acme.id, user_id=viewer.id),
             ]
         )
         await db.commit()
@@ -251,6 +263,7 @@ async def seeded(sessions):
             "admin": admin.id,
             "member": member.id,
             "other": other.id,
+            "viewer": viewer.id,
             "acme": acme.id,
             "ops": ops.id,
         }
@@ -275,6 +288,15 @@ async def as_admin(client, seeded):
 async def as_member(client, seeded):
     await client.post(
         "/api/auth/login", json={"email": "qa@example.com", "password": "member-password"}
+    )
+    return client
+
+
+@pytest_asyncio.fixture
+async def as_viewer(client, seeded):
+    """In ACME, like ``as_member``, and allowed to do far less with it."""
+    await client.post(
+        "/api/auth/login", json={"email": "watch@example.com", "password": "viewer-password"}
     )
     return client
 
