@@ -34,6 +34,7 @@ export default function ProfilesPage() {
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [cert, setCert] = useState<CertPrompt | null>(null);
+  const [removing, setRemoving] = useState<Profile | null>(null);
 
   const load = useCallback(async () => {
     const list = await api.profiles();
@@ -118,6 +119,24 @@ export default function ProfilesPage() {
     }
   }
 
+  async function remove(profile: Profile) {
+    setBusy(profile.id);
+    setError("");
+    try {
+      await api.deleteProfile(profile.id);
+      setRemoving(null);
+      // The selection pointed at a row that no longer exists; letting load()
+      // choose again is what stops the panel rendering a deleted profile.
+      setSelected(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not remove the profile.");
+      setRemoving(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function disconnect(profile: Profile) {
     setBusy(profile.id);
     try {
@@ -147,6 +166,32 @@ export default function ProfilesPage() {
       </div>
 
       {error ? <Banner tone="bad" title={error} /> : null}
+
+      {removing ? (
+        <Modal
+          open
+          onClose={() => setRemoving(null)}
+          title={`Remove ${removing.name}?`}
+          sub="The tunnel is brought down first. Cameras that use it must be moved or removed beforehand."
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-fg-2">
+              {modeLabel(removing.mode)}
+              {removing.vpn_gateway ? ` · ${removing.vpn_gateway}` : ""}
+              {removing.jump_host ? ` · ${removing.jump_host}` : ""}
+            </p>
+            <p className="text-xs text-fg-3">
+              Its stored VPN and SSH credentials go with it and cannot be recovered.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button onClick={() => setRemoving(null)}>Keep it</Button>
+              <Button variant="danger" onClick={() => remove(removing)}>
+                Remove profile
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,320px)_1fr]">
         <Card className="self-start">
@@ -197,6 +242,14 @@ export default function ProfilesPage() {
                       disabled={busy === current.id}
                     >
                       {busy === current.id ? "Connecting…" : "Connect"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => setRemoving(current)}
+                      disabled={busy === current.id}
+                    >
+                      Remove
                     </Button>
                   </div>
                 }

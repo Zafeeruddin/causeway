@@ -477,6 +477,28 @@ async def test_the_estimate_endpoint_answers_before_anyone_presses_record(
     assert 300_000_000 < body["estimated_bytes"] < 400_000_000
 
 
+async def test_a_profile_in_use_says_what_is_using_it(as_member, seeded, direct_profile):
+    """The foreign key refuses this anyway. It refuses with an integrity error,
+    which reaches the user as a 500 and names nothing they can act on."""
+    await _a_camera(as_member, seeded, direct_profile, name="Held")
+
+    response = await as_member.delete(f"/api/profiles/{direct_profile}")
+
+    assert response.status_code == 409
+    assert "1 camera still uses this profile" in response.text
+
+
+async def test_a_profile_nothing_depends_on_can_go(as_member, seeded, direct_profile):
+    response = await as_member.delete(f"/api/profiles/{direct_profile}")
+    assert response.status_code == 204
+    assert (await as_member.get(f"/api/profiles/{direct_profile}")).status_code == 404
+
+
+async def test_a_viewer_cannot_remove_a_profile(as_member, seeded, direct_profile):
+    await _login(as_member, "watch@example.com", "viewer-password")
+    assert (await as_member.delete(f"/api/profiles/{direct_profile}")).status_code == 403
+
+
 # ---- who may do what ---------------------------------------------------
 
 

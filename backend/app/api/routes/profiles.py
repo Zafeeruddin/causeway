@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import current_principal, require_admin
@@ -20,7 +20,7 @@ from app.api.schemas import (
 )
 from app.db import Principal, get_session, scoped_select
 from app.enums import GateStatus, ProfileState
-from app.models import ConnectionProfile, GateRun
+from app.models import Camera, ConnectionProfile, GateRun
 from app.security.secrets import secrets_backend
 from app.services.audit import record
 from app.services.gateway import ConnectionGateway
@@ -174,6 +174,28 @@ async def delete_profile(
     principal: Principal = Depends(current_principal),
     service: ConnectionGateway = Depends(gateway),
 ) -> None:
+    """Remove a profile, once nothing depends on it.
+
+    Cameras hold their profile with ON DELETE RESTRICT, so the database will
+    refuse this anyway -- but it refuses with an integrity error, which reaches
+    the user as a 500 and tells them nothing about what to do. Counting first
+    turns that into a sentence naming what is in the way.
+    """
+    rows = await db.execute(
+        select(func.count()).select_from(Camera).where(Camera.profile_id == profile.id)
+    )
+    cameras = rows.scalar_one()
+    if cameras:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{cameras} camera{'' if cameras == 1 else 's'} still "
+            f"{'uses' if cameras == 1 else 'use'} this profile. Remove or repoint "
+            f"them first - a camera without a profile has no way to be reached.",
+        )
+
+    # Down before out: the profile owns a VPN client, an SSH master and a
+    # namespace, and deleting the row would leave all three running with nothing
+    # left that knows how to stop them.
     await service.disconnect(db, profile)
     await db.delete(profile)
     await db.flush()
