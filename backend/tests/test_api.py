@@ -666,7 +666,11 @@ async def test_an_admin_cannot_create_an_account_above_their_own_reach(as_member
 
     homeless = await as_member.post(
         "/api/admin/users",
-        json={"email": "nowhere@example.com", "password": "a-long-enough-password", "role": "viewer"},
+        json={
+            "email": "nowhere@example.com",
+            "password": "a-long-enough-password",
+            "role": "viewer",
+        },
     )
     assert homeless.status_code == 422, "an account its creator could not then see"
 
