@@ -21,6 +21,7 @@ from app.main import configure_logging
 from app.net.netns import NetnsManager
 from app.net.ports import PortPool
 from app.net.ssh import TunnelManager
+from app.net.vpn.base import ppp_available
 from app.services.connections import ConnectionService
 from app.services.events import event_bus
 from app.services.preview import PreviewManager
@@ -47,6 +48,18 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, agent.stop)
+
+    if not ppp_available():
+        # Said at startup rather than discovered on the first dial, where it
+        # arrives as a pppd stack trace after the credentials have already been
+        # accepted -- which reads like a VPN problem and is not one.
+        log.warning(
+            "agent.ppp_unavailable",
+            hint="pppd cannot run here: the PPP line discipline is missing. "
+            "`modprobe ppp_async` on the host, and add ppp_generic, ppp_async "
+            "and ppp_deflate to /etc/modules-load.d/ to keep it. Fortinet and "
+            "other pppd-based VPN profiles will fail until then.",
+        )
 
     if not agent.connections.netns.available:
         log.warning(

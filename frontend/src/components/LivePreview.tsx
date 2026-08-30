@@ -96,10 +96,20 @@ export function LivePreview({
           return;
         }
 
+        // Negotiation succeeding and video arriving are two different things,
+        // and the gap between them is where every firewall shows up: the offer
+        // and answer travel over HTTPS through the proxy, while the video comes
+        // straight from the preview server over UDP. A deployment that has not
+        // opened that port looks perfectly healthy right up to here.
+        let everLive = false;
         const session = await openWhep(started.whep_url, (state) => {
           if (attempt.abandoned) return;
-          if (state === "live") setView({ phase: "live" });
-          else if (state === "lost") end("The connection to the stream dropped.");
+          if (state === "live") {
+            everLive = true;
+            setView({ phase: "live" });
+          } else if (state === "lost") {
+            end(everLive ? "The connection to the stream dropped." : mediaUnreachable());
+          }
         });
         if (attempt.abandoned) {
           session.close();
@@ -107,6 +117,15 @@ export function LivePreview({
         }
         attempt.session = session;
         if (videoRef.current) videoRef.current.srcObject = session.stream;
+
+        // ICE can also simply never resolve, in which case no state arrives at
+        // all and the player would sit on "Connecting…" for ever.
+        window.setTimeout(() => {
+          if (attempt.abandoned || everLive) return;
+          setView((current) =>
+            current.phase === "starting" ? { phase: "failed", message: mediaUnreachable() } : current,
+          );
+        }, MEDIA_TIMEOUT_MS);
       } catch (error) {
         if (attempt.abandoned) return;
         setView({ phase: "failed", message: explain(error) });
@@ -250,6 +269,25 @@ function explain(error: unknown): string {
  * WebRTC. Recording is unaffected, which is worth saying, because "preview is
  * broken" and "this camera is broken" look identical from here.
  */
+/** How long to wait for the first frame before calling the media leg blocked. */
+const MEDIA_TIMEOUT_MS = 15_000;
+
+/**
+ * The message for a stream that negotiated and then never arrived.
+ *
+ * Almost always the same cause, and almost never guessed correctly from a
+ * generic failure: signalling goes through the reverse proxy on 443 and the
+ * video does not. It is worth naming the port, because the person reading this
+ * is usually the person who can open it.
+ */
+function mediaUnreachable(): string {
+  return (
+    "The stream was set up but no video arrived. This browser could not reach " +
+    "the video port (UDP 8189) on the preview server - it does not go through " +
+    "the web proxy, so it has to be open separately."
+  );
+}
+
 function codecComplaint(codec: string): string {
   if (!codec) return "";
   const supported = RTCRtpReceiver.getCapabilities?.("video")?.codecs ?? [];

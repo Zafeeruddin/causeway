@@ -20,6 +20,7 @@ import contextlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import structlog
 
@@ -27,6 +28,29 @@ from app.enums import VpnKind
 from app.net.runner import Runner
 
 log = structlog.get_logger(__name__)
+
+#: Where the kernel lists the tty line disciplines it knows about. pppd sets the
+#: PPP discipline on its tty, and the discipline is registered by ``ppp_async``
+#: -- a module a container cannot load for itself, because module autoloading
+#: needs privileges no container has.
+LDISCS = Path("/proc/tty/ldiscs")
+
+
+def ppp_available() -> bool:
+    """Whether pppd can actually work on this host.
+
+    ``/dev/ppp`` existing is necessary and not sufficient: that is
+    ``ppp_generic``, which is often built into the kernel, while the line
+    discipline pppd needs comes from ``ppp_async``, which is usually not loaded
+    until something asks for it. Checking the device alone passes on a host
+    where every dial will fail.
+    """
+    try:
+        return any(line.split()[:1] == ["ppp"] for line in LDISCS.read_text().splitlines())
+    except OSError:
+        # No /proc to read: assume it works rather than refusing to try.
+        return True
+
 
 #: Devices the kernel creates in a namespace whether or not anything uses them.
 #: ``tunl0`` is the one that bites: it exists in every namespace the moment the
@@ -61,6 +85,19 @@ class PostureFailed(VpnError):
 
 class DialTimeout(VpnError):
     user_message = "The gateway did not respond in time."
+
+
+class HostMisconfigured(VpnError):
+    """The dial cannot work until something changes on the machine.
+
+    Distinct from every other failure here because nothing about the profile,
+    the credentials or the gateway is wrong -- retrying will fail identically
+    until an operator acts, so the message has to name the action.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.user_message = message
+        super().__init__(message)
 
 
 class ClientExited(VpnError):

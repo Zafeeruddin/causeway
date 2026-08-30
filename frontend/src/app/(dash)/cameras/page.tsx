@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, modeLabel } from "@/lib/format";
@@ -14,6 +15,7 @@ import {
 type AddMode = "single" | "paste" | "csv";
 
 export default function CamerasPage() {
+  const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [cameras, setCameras] = useState<Camera[]>([]);
@@ -164,6 +166,11 @@ export default function CamerasPage() {
         onStarted={() => {
           setRecording(false);
           setSelection(new Set());
+          // A recording is a background job with a life of its own -- it
+          // queues, records, finalises and uploads over minutes. Leaving the
+          // person on the camera list gives them nothing to watch it happen
+          // on, and the answer to "did that work?" is one page away.
+          router.push("/recordings");
         }}
       />
     </div>

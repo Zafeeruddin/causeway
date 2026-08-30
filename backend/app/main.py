@@ -17,6 +17,7 @@ from app.enums import ReachMode, SourceKind, SshAuth, VpnKind
 from app.net.netns import NetnsManager
 from app.net.ports import PortPool
 from app.net.ssh import TunnelManager
+from app.net.vpn.base import ppp_available
 from app.services.commands import CommandError, command_bus
 from app.services.connections import ConnectionService
 from app.services.events import event_bus
@@ -174,11 +175,13 @@ async def _network_status(app: FastAPI) -> dict:
     if app.state.netns is not None:
         return {
             "netns_available": app.state.netns.available,
+            "ppp_available": ppp_available(),
             "ports_in_use": app.state.ports.in_use,
         }
     reported = await app.state.gateway.ping()
     return {
         "netns_available": bool(reported.get("netns_available")),
+        "ppp_available": bool(reported.get("ppp_available", True)),
         "agent": reported,
     }
 
