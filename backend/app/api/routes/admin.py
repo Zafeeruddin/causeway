@@ -15,7 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import hash_password, require_admin, require_superadmin
 from app.api.deps import deny_unless_team_admin
-from app.api.schemas import MembershipRequest, TeamCreate, TeamOut, UserCreate, UserOut
+from app.api.schemas import (
+    MembershipRequest,
+    TeamCreate,
+    TeamOut,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 from app.db import Principal, get_session
 from app.enums import Role
 from app.models import Team, TeamMember, User
@@ -144,6 +151,60 @@ async def create_user(
         user.id,
         {"role": str(user.role), "teams": body.team_ids},
     )
+    return UserOut.model_validate(user)
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+async def update_user(
+    user_id: str,
+    body: UserUpdate,
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_admin),
+) -> UserOut:
+    """Change what an account is allowed to do.
+
+    Three rules, each closing a way this becomes a privilege ladder:
+
+    * Nobody edits their own role. Otherwise the last superadmin can demote
+      themselves and lock the deployment out of its own administration, and an
+      admin who could edit roles at all could promote themselves.
+    * Only a superadmin creates or edits a superadmin -- in either direction.
+    * An admin acts only on people who are in their own teams, and may set only
+      the viewer and admin roles, matching what they may create.
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user.")
+
+    if user.id == principal.user_id and body.role is not None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot change your own role.")
+
+    if not principal.is_superadmin:
+        if Role(user.role) is Role.SUPERADMIN:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Only a superadmin can change this account."
+            )
+        if body.role is not None and Role(body.role) is Role.SUPERADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can grant that role.")
+        rows = await db.execute(select(TeamMember.team_id).where(TeamMember.user_id == user.id))
+        shared = set(rows.scalars().all()) & principal.team_ids
+        if not shared:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user.")
+
+    changed: dict[str, object] = {}
+    if body.role is not None:
+        user.role = Role(body.role)
+        changed["role"] = str(user.role)
+    if body.is_active is not None:
+        user.is_active = body.is_active
+        changed["is_active"] = user.is_active
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip()
+        changed["display_name"] = user.display_name
+
+    await db.flush()
+    if changed:
+        await record(db, principal, "user.update", "user", user.id, changed)
     return UserOut.model_validate(user)
 
 

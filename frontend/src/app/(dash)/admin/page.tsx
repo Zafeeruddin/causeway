@@ -95,7 +95,12 @@ export default function AdminPage() {
                   <p className="truncate text-sm">{user.display_name || user.email}</p>
                   <p className="truncate font-mono text-2xs text-fg-3">{user.email}</p>
                 </div>
-                <Badge tone={user.role === "viewer" ? "muted" : "steel"}>{user.role}</Badge>
+                <RolePicker
+                  user={user}
+                  me={me}
+                  onChanged={load}
+                  onError={setError}
+                />
                 <span className="w-20 text-right text-2xs text-fg-3">
                   {ago(user.last_login_at)}
                 </span>
@@ -190,6 +195,66 @@ function NewTeamModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/**
+ * The role, editable in place.
+ *
+ * A role is the only thing about an account that routinely turns out wrong --
+ * someone joins as a viewer and starts running the cameras, or the reverse --
+ * and the alternative to changing it here is deleting the account and making
+ * another, which loses everything attached to it.
+ *
+ * The server decides all of this again; what the picker does is avoid offering
+ * a choice that will come back as a 403.
+ */
+function RolePicker({
+  user, me, onChanged, onError,
+}: {
+  user: User;
+  me: Me | null;
+  onChanged: () => Promise<void> | void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const superadmin = me?.role === "superadmin";
+  const self = me?.id === user.id;
+  // Nobody edits their own role: the last superadmin demoting themselves locks
+  // the deployment out of its own administration.
+  const locked = self || (!superadmin && user.role === "superadmin");
+
+  if (locked) {
+    return (
+      <Badge tone={user.role === "viewer" ? "muted" : "steel"}>
+        {user.role}
+        {self ? " · you" : ""}
+      </Badge>
+    );
+  }
+
+  return (
+    <Select
+      aria-label={`Role for ${user.email}`}
+      className="w-36 py-1 text-xs"
+      value={user.role}
+      disabled={busy}
+      onChange={async (event) => {
+        setBusy(true);
+        try {
+          await api.updateUser(user.id, { role: event.target.value });
+          await onChanged();
+        } catch (err) {
+          onError(err instanceof ApiError ? err.message : "Could not change the role.");
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <option value="viewer">viewer</option>
+      <option value="admin">admin</option>
+      {superadmin ? <option value="superadmin">superadmin</option> : null}
+    </Select>
   );
 }
 

@@ -15,6 +15,7 @@ import pytest
 from app.config import settings
 from app.enums import ReachMode, SourceKind
 from app.models import Camera, CameraSource, ConnectionProfile, Team
+from app.recorder.accel import Accel, Capacity, TranscodeBudget
 from app.recorder.session import OpenPath
 from app.security.redaction import StreamUrl
 from app.services.preview import PreviewError, PreviewManager, whep_url
@@ -95,12 +96,28 @@ async def camera(sessions):
         return cam
 
 
-def build(sessions, path: ScriptedPath, mtx: FakeMediaMtx | None = None) -> PreviewManager:
+def budget_for(accel: Accel = Accel.CPU, limit: int = 8) -> TranscodeBudget:
+    """A budget that does not depend on what hardware the test happens to run on.
+
+    Detection is deliberately not exercised here: it reads the machine, and a
+    test whose expected ffmpeg arguments change with the developer's graphics
+    card is a test that fails for the wrong reason.
+    """
+    return TranscodeBudget(Capacity(accel=accel, limit=limit, detail="test"))
+
+
+def build(
+    sessions,
+    path: ScriptedPath,
+    mtx: FakeMediaMtx | None = None,
+    budget: TranscodeBudget | None = None,
+) -> PreviewManager:
     return PreviewManager(
         connections=None,  # the path factory is what reaches the camera here
         sessions=sessions,
         mediamtx=mtx or FakeMediaMtx(),
         path_factory=lambda camera, source: path,
+        budget=budget or budget_for(),
     )
 
 
@@ -279,6 +296,76 @@ async def test_a_codec_no_browser_decodes_is_re_encoded_on_the_way_through(
     assert "-c copy" not in argv
     # Audio is dropped rather than re-encoded: nothing here listens to it.
     assert "-an" in argv
+
+
+async def test_a_card_is_used_end_to_end_when_there_is_one(sessions, camera, publishable):
+    """Decode and encode both on the card, and no pixel format in between: a
+    -pix_fmt here would pull the frames back to host memory and hand the whole
+    saving straight back."""
+    path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx(), budget_for(Accel.NVIDIA))
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "hevc"
+        await previews.start(db, camera, "user-1")
+
+    argv = " ".join(path.spawned[0])
+    assert "-hwaccel cuda -hwaccel_output_format cuda" in argv
+    assert "-c:v h264_nvenc" in argv
+    assert "libx264" not in argv
+    assert "-pix_fmt" not in argv
+
+
+async def test_a_stream_copy_never_asks_for_the_card(sessions, camera, publishable):
+    """Decoding into card memory to copy a stream nobody decodes is pure cost."""
+    path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx(), budget_for(Accel.NVIDIA))
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "h264"
+        await previews.start(db, camera, "user-1")
+
+    assert "-hwaccel" not in " ".join(path.spawned[0])
+
+
+async def test_a_machine_at_capacity_refuses_with_a_reason(sessions, camera, publishable):
+    """The alternative is admitting a stream the machine cannot carry, which
+    arrives as stutter across every stream at once and reads like a network
+    problem."""
+    previews = build(sessions, ScriptedPath(), FakeMediaMtx(), budget_for(Accel.CPU, limit=1))
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "hevc"
+        await previews.start(db, camera, "user-1")
+        with pytest.raises(PreviewError) as caught:
+            await previews.start(db, camera, "user-2", kind=SourceKind.HLS)
+
+    assert "already transcoding" in str(caught.value)
+    assert previews.budget.in_use == 1
+
+
+async def test_a_slot_is_given_back_when_the_stream_ends(sessions, camera, publishable):
+    """A budget that only ever counts up stops the machine one preview at a
+    time until a restart."""
+    previews = build(sessions, ScriptedPath(), FakeMediaMtx(), budget_for(Accel.CPU, limit=2))
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "hevc"
+        info = await previews.start(db, camera, "user-1")
+    assert previews.budget.in_use == 1
+
+    await previews.stop(info.id, info.viewer)
+    assert previews.budget.in_use == 0
+
+
+async def test_a_copy_costs_nothing_against_the_budget(sessions, camera, publishable):
+    previews = build(sessions, ScriptedPath(), FakeMediaMtx(), budget_for(Accel.CPU, limit=1))
+    async with sessions() as db:
+        for source in camera.sources:
+            source.codec = "h264"
+        await previews.start(db, camera, "user-1")
+
+    assert previews.budget.in_use == 0, "a stream copy took a transcode slot"
 
 
 async def test_an_unprobed_source_is_copied_rather_than_guessed_at(sessions, camera, publishable):

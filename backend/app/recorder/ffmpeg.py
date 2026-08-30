@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.enums import SourceKind
+from app.recorder.accel import Accel
 from app.security.redaction import StreamUrl
 
 #: Written by the segment muxer, one line per sealed segment.
@@ -128,7 +129,12 @@ def needs_transcode(codec: str) -> bool:
 
 
 def publish_argv(
-    url: StreamUrl, kind: SourceKind, target: str, *, transcode: bool = False
+    url: StreamUrl,
+    kind: SourceKind,
+    target: str,
+    *,
+    transcode: bool = False,
+    accel: Accel = Accel.CPU,
 ) -> list[str]:
     """Republish a live source to MediaMTX.
 
@@ -148,8 +154,13 @@ def publish_argv(
     argv = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning"]
     if kind is SourceKind.RTSP:
         argv += ["-rtsp_transport", "tcp"]
+    if transcode and accel is Accel.NVIDIA:
+        # Before -i, and only when re-encoding: this decodes into card memory,
+        # so the encoder below reads frames that never crossed the PCIe bus.
+        # Asking for it on a stream copy would decode a stream nothing decodes.
+        argv += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     argv += ["-fflags", "+genpts", "-i", url.expose()]
-    argv += _transcode_argv() if transcode else ["-c", "copy"]
+    argv += _transcode_argv(accel) if transcode else ["-c", "copy"]
     argv += [
         "-f",
         "rtsp",
@@ -161,17 +172,41 @@ def publish_argv(
     return argv
 
 
-def _transcode_argv() -> list[str]:
+def _transcode_argv(accel: Accel) -> list[str]:
     """Re-encode to what every browser can decode, as cheaply as it can be done.
 
-    ``ultrafast`` and ``zerolatency`` because this is a monitor picture, not an
-    archive -- the recording keeps the camera's own bytes and owes nothing to
-    this path. The short keyframe interval is what lets a viewer joining an
-    established stream see a picture in a second rather than waiting for the
-    camera's own interval, which on these cameras can be several seconds. Audio
-    is dropped rather than transcoded to Opus: nothing in the product listens to
-    it, and encoding it would be spending CPU on silence.
+    Same picture either way, and the same three choices behind it whichever
+    encoder runs. This is a monitor view, not an archive -- the recording keeps
+    the camera's own bytes and owes nothing to this path -- so the fastest
+    preset wins over quality. The short keyframe interval is what lets a viewer
+    joining an established stream see a picture in about a second rather than
+    waiting out the camera's own interval, which on these is often several. And
+    audio is dropped rather than re-encoded to Opus: nothing in the product
+    listens to it, so encoding it would be spending the machine on silence.
     """
+    if accel is Accel.NVIDIA:
+        return [
+            "-an",
+            "-c:v",
+            "h264_nvenc",
+            # p1 is NVENC's fastest preset and ll its low-latency tuning: the
+            # equivalent choice to ultrafast/zerolatency below.
+            "-preset",
+            "p1",
+            "-tune",
+            "ll",
+            "-profile:v",
+            "baseline",
+            # B-frames buy compression at the cost of latency, which is the
+            # wrong trade for a live view.
+            "-bf",
+            "0",
+            "-g",
+            "30",
+            # No -pix_fmt here on purpose: the frames are already on the card in
+            # NV12, and naming a pixel format would pull them back to host
+            # memory and hand the saving straight back.
+        ]
     return [
         "-an",
         "-c:v",

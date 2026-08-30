@@ -12,7 +12,9 @@ import pytest
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import EndpointConnectionError
 
+from app.config import settings
 from app.enums import SourceKind
+from app.recorder import accel as accel_module
 from app.storage.client import BucketMissing, ObjectStore, StorageError
 from app.storage.keys import content_type_for, download_name, source_key, team_prefix
 from app.storage.retention import (
@@ -197,6 +199,81 @@ def test_usage_state_names_the_four_bands():
 def test_thresholds_must_be_ordered():
     with pytest.raises(ValueError, match="warn <= gc <= hard"):
         StoragePolicy(warn_bytes=90 * GB, gc_bytes=60 * GB, hard_bytes=98 * GB)
+
+
+# ---- how much this machine will encode ----------------------------------
+
+
+@pytest.fixture
+def fresh_settings():
+    """Settings are cached for the life of the process, so a test that changes
+    the environment has to drop the cache on the way in *and* on the way out --
+    otherwise the next test to read settings gets this one's."""
+    settings.cache_clear()
+    yield
+    settings.cache_clear()
+
+
+def test_the_cpu_budget_is_a_share_of_the_cores_actually_present(monkeypatch, fresh_settings):
+    """Eighty percent of a machine, divided by what one stream costs. Naming a
+    fixed number of streams instead would be wrong on both a laptop and a
+    32-core server, and wrong in the direction that matters on the laptop."""
+    monkeypatch.setenv("TRANSCODE_ACCEL", "cpu")
+    monkeypatch.setenv("CPU_BUDGET_PERCENT", "80")
+    monkeypatch.setenv("CPU_COST_PER_STREAM", "0.6")
+    monkeypatch.setattr(accel_module.os, "cpu_count", lambda: 32)
+
+    capacity = accel_module.detect()
+    assert capacity.accel is accel_module.Accel.CPU
+    # 32 * 0.8 = 25.6 cores of budget, at 0.6 cores each.
+    assert capacity.limit == 42
+    assert "32 cores" in capacity.detail
+
+
+def test_a_small_machine_still_gets_one_stream(monkeypatch, fresh_settings):
+    """Zero would be arithmetically right and useless: a machine that can carry
+    one stream should carry one rather than refuse everything."""
+    monkeypatch.setenv("TRANSCODE_ACCEL", "cpu")
+    monkeypatch.setenv("CPU_BUDGET_PERCENT", "10")
+    monkeypatch.setattr(accel_module.os, "cpu_count", lambda: 1)
+
+    assert accel_module.detect().limit == 1
+
+
+def test_the_gpu_budget_is_a_share_of_its_sessions(monkeypatch, fresh_settings):
+    monkeypatch.setenv("TRANSCODE_ACCEL", "nvidia")
+    monkeypatch.setenv("GPU_BUDGET_PERCENT", "80")
+    monkeypatch.setenv("GPU_SESSIONS", "16")
+
+    capacity = accel_module.detect()
+    assert capacity.accel is accel_module.Accel.NVIDIA
+    assert capacity.limit == 12
+
+
+def test_auto_falls_back_to_the_cpu_when_no_card_answers(monkeypatch, fresh_settings):
+    """`nvidia-smi` on the host is not the question -- this runs in a container,
+    and the card is only there if the runtime was asked to pass it through."""
+    monkeypatch.setenv("TRANSCODE_ACCEL", "auto")
+    monkeypatch.setattr(accel_module, "_has_nvidia", lambda: False)
+
+    capacity = accel_module.detect()
+    assert capacity.accel is accel_module.Accel.CPU
+    assert "no NVIDIA card visible" in capacity.detail
+
+
+async def test_the_budget_refuses_rather_than_overcommitting():
+    budget = accel_module.TranscodeBudget(
+        accel_module.Capacity(accel=accel_module.Accel.CPU, limit=2, detail="test")
+    )
+    await budget.reserve()
+    await budget.reserve()
+    with pytest.raises(accel_module.AtCapacity) as caught:
+        await budget.reserve()
+
+    assert "already transcoding 2 cameras" in caught.value.user_message
+    await budget.release()
+    await budget.reserve()  # the freed slot is usable again
+    assert budget.in_use == 2
 
 
 # ---- what an upload failure looks like ----------------------------------

@@ -87,6 +87,19 @@ services:
     # uploading what is already on disk. The 10s default would kill that
     # mid-upload and strand the segments on the work volume.
     stop_grace_period: 120s
+    # ---- GPU, optional -------------------------------------------------
+    # Only H.265-and-similar previews transcode; everything else is a stream
+    # copy. On a machine with an NVIDIA card and the container toolkit, hand it
+    # through and the agent detects it and uses NVDEC/NVENC. Without this the
+    # card is invisible in here whatever the host has, and the agent correctly
+    # falls back to libx264 -- see app/recorder/accel.py.
+    #
+    # Uncomment both, or set TRANSCODE_ACCEL=cpu to be explicit about not
+    # wanting it.
+    # runtime: nvidia
+    # environment:
+    #   NVIDIA_VISIBLE_DEVICES: all
+    #   NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     cap_add: [NET_ADMIN, SYS_ADMIN]
     security_opt: [apparmor:unconfined]
     devices: ["/dev/ppp:/dev/ppp"]

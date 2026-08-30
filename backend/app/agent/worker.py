@@ -175,6 +175,9 @@ class Agent:
             # a VPN profile that cannot possibly work, discovered only when
             # someone presses Connect and reads a pppd stack trace.
             "ppp_available": ppp_available(),
+            # What this machine encodes with and how much of that is spoken
+            # for. The number people actually need when a preview is refused.
+            **(self.previews.budget.status() if self.previews else {}),
             "recordings": len(self._tasks),
             "capacity": self.concurrency,
             "previews": self.previews.count if self.previews else 0,

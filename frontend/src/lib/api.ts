@@ -125,6 +125,8 @@ export const api = {
 
   // recordings
   recordings: () => request<Recording[]>("/api/recordings"),
+  deleteRecording: (id: string) =>
+    request<void>(`/api/recordings/${id}`, { method: "DELETE" }),
   startRecording: (camera_ids: string[], seconds: number) =>
     request<Recording[]>("/api/recordings", { method: "POST", ...json({ camera_ids, seconds }) }),
   estimate: (camera_ids: string[], seconds: number) =>
@@ -142,6 +144,8 @@ export const api = {
     email: string; password: string; display_name?: string; role?: string; team_ids?: string[];
   }) =>
     request<User>("/api/admin/users", { method: "POST", ...json(body) }),
+  updateUser: (userId: string, body: { role?: string; is_active?: boolean }) =>
+    request<User>(`/api/admin/users/${userId}`, { method: "PATCH", ...json(body) }),
   addMember: (teamId: string, userId: string) =>
     request<void>(`/api/admin/teams/${teamId}/members`, { method: "POST", ...json({ user_id: userId }) }),
   removeMember: (teamId: string, userId: string) =>
