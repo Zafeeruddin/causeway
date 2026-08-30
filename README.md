@@ -13,6 +13,10 @@
 
 </div>
 
+<div align="center">
+  <img src="assets/demo.svg" alt="The eight gates running in order, then the camera playing live" width="820">
+</div>
+
 ---
 
 Cameras on a customer's private network are behind a VPN, then behind a jump
@@ -63,6 +67,19 @@ on.
 password, the missing kernel module, the camera that authenticated and then
 refused the stream — each arrives as the sentence an operator can act on. Most
 of the tests in this repo exist to keep it that way.
+
+## See it work
+
+The animation above is the real sequence, at real proportions: eight gates in
+order, one of them skipped because this profile has no whitelist endpoint, and
+the picture arriving after the last one passes. The whole thing takes about five
+seconds against a camera behind a VPN and a jump host.
+
+What it does not show, because a still cannot: when a hop fails, the ladder
+stops at that hop and says why. `The gateway refused the connection - check the
+username and password` on gate 1 is a different afternoon from `127.0.0.1:20000
+forwards to 10.20.30.42:554` on gate 6, and the product's job is to tell you
+which one you are having.
 
 ## Quick start
 
