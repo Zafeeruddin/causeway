@@ -18,11 +18,13 @@ import re
 from app.enums import VpnKind
 from app.net.vpn.base import (
     AuthFailed,
+    HostMisconfigured,
     PostureFailed,
     TrustPromptRequired,
     VpnConfig,
     VpnDriver,
     VpnStatus,
+    ppp_available,
 )
 
 #: "ERROR:  Gateway certificate validation failed, and the certificate digest
@@ -35,6 +37,12 @@ _AUTH_FAIL = re.compile(
 )
 _POSTURE = re.compile(r"host ?check|endpoint (compliance|control)|registration required", re.I)
 _UP = re.compile(r"tunnel is up and running", re.I)
+#: pppd could not put its tty into PPP mode. Reads as a permissions problem and
+#: is almost never one: the PPP line discipline is registered by ``ppp_async``,
+#: and a container cannot load a kernel module. Left unclassified this arrives
+#: as "pppd: An immediately fatal error of some kind occurred", which sends the
+#: reader to look at capabilities, credentials and the gateway in turn.
+_PPP_DISCIPLINE = re.compile(r"tty to ppp discipline|ppp discipline", re.I)
 
 
 class FortinetDriver(VpnDriver):
@@ -91,6 +99,14 @@ class FortinetDriver(VpnDriver):
                 # openfortivpn prints the explanation before the digest; keep
                 # reading so the next line can carry the fingerprint.
                 return None
+            if _PPP_DISCIPLINE.search(line) or (not ppp_available() and "pppd" in line.lower()):
+                raise HostMisconfigured(
+                    "This machine cannot run pppd: the PPP line discipline is missing. "
+                    "Load it on the host with `modprobe ppp_async` and keep it across "
+                    "reboots by adding ppp_generic, ppp_async and ppp_deflate to "
+                    "/etc/modules-load.d/. The VPN authenticated correctly -- only the "
+                    "tunnel could not be built."
+                )
             if _POSTURE.search(line):
                 raise PostureFailed(f"{line}\n{self.log_tail}")
             if _AUTH_FAIL.search(line):

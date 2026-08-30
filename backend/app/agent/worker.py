@@ -35,6 +35,7 @@ from app.db import sessionmaker
 from app.enums import ProfileState, RecordingState, SourceKind
 from app.models import Camera, ConnectionProfile, Recording, StorageObject, Team
 from app.net.runner import LocalRunner, Runner
+from app.net.vpn.base import ppp_available
 from app.recorder.session import RecordingSession, SessionReport
 from app.recorder.shipper import ShipResult, discard, ship
 from app.services.commands import CommandBus, command_bus
@@ -170,6 +171,10 @@ class Agent:
         """What the agent says about itself when the API asks."""
         return {
             "netns_available": self.connections.netns.available,
+            # Reported next to the namespace because they fail the same way:
+            # a VPN profile that cannot possibly work, discovered only when
+            # someone presses Connect and reads a pppd stack trace.
+            "ppp_available": ppp_available(),
             "recordings": len(self._tasks),
             "capacity": self.concurrency,
             "previews": self.previews.count if self.previews else 0,

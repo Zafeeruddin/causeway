@@ -104,11 +104,30 @@ upload. 20 GB is comfortable at this scale.
 ## 2. Prerequisites on the new host
 
 - Ubuntu 22.04 or newer, Docker Engine with the compose plugin.
-- The `ppp` kernel module and `/dev/ppp` present — `modprobe ppp_generic`, and
-  add `ppp_generic` to `/etc/modules-load.d/` so it survives a reboot. Without
-  it the VPN dial fails with a pppd error that does not mention the device.
+- **Three ppp modules, not one.** `/dev/ppp` existing is `ppp_generic`, which is
+  usually built into the kernel — necessary and not sufficient. pppd also needs
+  the PPP *line discipline*, which comes from `ppp_async`, and a container
+  cannot load a kernel module for itself.
+
+  ```bash
+  sudo modprobe ppp_generic ppp_async ppp_deflate
+  printf 'ppp_generic\nppp_async\nppp_deflate\n' | sudo tee /etc/modules-load.d/ppp.conf
+  ```
+
+  Check it with `cat /proc/tty/ldiscs` — a line reading `ppp` is what you want.
+  Without it the dial *authenticates successfully* and then fails at
+  `Couldn't set tty to PPP discipline`, which reads like a permissions problem
+  and is not one. The app now detects this: `/api/health` reports
+  `ppp_available`, the agent warns at startup, and gate 1 names the module.
 - Ports **80** and **443** open to the internet (nginx), and **8189/udp** open
   to wherever your users are (WebRTC media). Nothing else needs to be public.
+
+  8189/udp is the one that gets forgotten, and it fails in the most misleading
+  way available: the dashboard loads, the camera tests green, the stream
+  negotiates, and then no video ever arrives. Signalling goes through nginx on
+  443; the video does not. If a router is involved, forward **UDP** 8189 and
+  check that it hairpins — many routers forward from outside but will not send a
+  LAN client back in through the public address.
 - A DNS `A` record for your domain pointing at the host.
 - Network reachability from the host to the VPN gateway and to the storage
   gateway. Neither goes through the tunnel.
@@ -130,7 +149,7 @@ Edit `.env`. The entries that must change for a new host:
 | `APP_SECRET_KEY` | `openssl rand -base64 48` — sessions are signed with it |
 | `SECRETS_KEY` | `openssl rand -base64 32` — **credentials are sealed with this; lose it and every stored VPN, SSH and camera password is unrecoverable** |
 | `S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | your storage gateway and its account |
-| `PREVIEW_HOST` | the **public** hostname or IP browsers will reach, e.g. `cams.example.com` |
+| `PREVIEW_HOST` | every address browsers will reach this host on, comma separated. Name the public host **and** the LAN address if anyone watches from the same network: `cams.example.com,192.168.0.126`. The browser is offered each as a candidate and keeps whichever connects. |
 | `PREVIEW_PUBLIC_BASE` | **leave empty.** WebRTC signalling then stays on the dashboard's own origin at `/rtc`, which is what the nginx block below serves. Set it only if you expose MediaMTX to browsers directly instead. |
 | `CONTROL_SUBNET` | only if 172.28.0.0/16 collides with something already on the host |
 
@@ -255,8 +274,28 @@ logged anywhere. Set it, and open **8189/udp** to your users.
 
 ---
 
-## 5. After it is up
+## 5. Sanity check before handing it over
 
+```bash
+curl -s https://cams.example.com/api/health
+```
+
+Three fields decide whether anything will work:
+
+| Field | Means |
+|---|---|
+| `agent.up` | the agent is answering; false means recordings never start |
+| `netns_available` | namespaces can be created; false means no VPN profile can dial |
+| `ppp_available` | the PPP line discipline is loaded; false means pppd VPNs authenticate and then fail |
+
+Then preview a camera **from a different device** — the only test that exercises
+`PREVIEW_HOST` and the media port. Doing it from the server proves nothing,
+because loopback always works.
+
+## 6. After it is up
+
+- **Log in to the registry** so updates can be pulled: `docker login registry.example.com`.
+  Without it `docker compose pull` fails and images have to be moved by hand.
 - **Move off the root storage credential.** `deploy/versity-setup.md` has the
   commands. The app should own its bucket, not the whole gateway.
 - **Back up `SECRETS_KEY`** somewhere other than the host. It is the only thing

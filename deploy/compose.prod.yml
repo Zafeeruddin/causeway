@@ -44,7 +44,9 @@ services:
     networks: [control]
 
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    # Pinned. `latest` moved us from 1.16 to 1.20 mid-deployment on a plain
+    # restart, which is not a thing a recreate should be able to do.
+    image: bluenviron/mediamtx:1.20.1
     restart: unless-stopped
     environment:
       MTX_PROTOCOLS: tcp

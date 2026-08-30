@@ -13,6 +13,7 @@ from app.enums import VpnKind
 from app.net.runner import ProcResult
 from app.net.vpn.base import (
     AuthFailed,
+    HostMisconfigured,
     PostureFailed,
     TrustPromptRequired,
     VpnConfig,
@@ -197,6 +198,49 @@ async def test_direct_mode_is_a_driver_not_a_null_check():
     assert (await driver.dial(VpnConfig(kind=VpnKind.NONE))).up
     assert (await driver.health()).up
     await driver.hangup()
+
+
+async def test_a_missing_ppp_line_discipline_names_the_module(monkeypatch):
+    """The host, not the profile. Credentials were accepted and the gateway
+    allocated a tunnel; pppd then could not build it. Unclassified this arrives
+    as "an immediately fatal error of some kind occurred", which sends the
+    reader through capabilities, credentials and the gateway in turn."""
+    runner = FakeRunner(
+        process=FakeProcess(
+            stderr=[
+                "INFO:   Authenticated.",
+                "INFO:   Remote gateway has allocated a VPN.",
+                "Couldn't set tty to PPP discipline: Operation not permitted",
+                "ERROR:  pppd: An immediately fatal error of some kind occurred",
+            ]
+        )
+    )
+    with pytest.raises(HostMisconfigured) as caught:
+        await FortinetDriver(runner).dial(VpnConfig(kind=VpnKind.FORTINET, gateway="g"), timeout=5)
+
+    assert "ppp_async" in caught.value.user_message
+    assert "authenticated correctly" in caught.value.user_message
+
+
+def test_ppp_availability_is_read_from_the_line_disciplines(tmp_path, monkeypatch):
+    """/dev/ppp existing is ppp_generic, which is usually built in. The
+    discipline pppd needs comes from ppp_async, and checking the device instead
+    passes on a host where every dial will fail."""
+    from app.net.vpn import base
+
+    present = tmp_path / "with"
+    present.write_text("n_tty       0\nppp         3\nn_null     27\n")
+    monkeypatch.setattr(base, "LDISCS", present)
+    assert base.ppp_available() is True
+
+    absent = tmp_path / "without"
+    absent.write_text("n_tty       0\nn_null     27\n")
+    monkeypatch.setattr(base, "LDISCS", absent)
+    assert base.ppp_available() is False
+
+    # Nothing to read is not evidence of absence; refusing to try would be worse.
+    monkeypatch.setattr(base, "LDISCS", tmp_path / "missing")
+    assert base.ppp_available() is True
 
 
 async def test_a_client_that_dies_without_speaking_is_reported_as_such():
