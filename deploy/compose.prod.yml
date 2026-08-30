@@ -1,0 +1,110 @@
+# Production stack: pulls from Harbor, builds nothing.
+#
+# The target host needs exactly three files -- this one, `.env`, and
+# `mediamtx.yml` beside it. No repository, no toolchain, no node.
+#
+#   docker compose -f compose.prod.yml --env-file .env up -d
+#
+# Every service restarts unless stopped, so the stack survives a reboot.
+
+name: cam-dashboard
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-cam}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cam}"]
+      interval: 5s
+      retries: 10
+    networks: [control]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    networks: [control]
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    environment:
+      MTX_PROTOCOLS: tcp
+      # The address browsers dial for the UDP media leg. Wrong value and the
+      # session negotiates and then video never starts, with nothing logged.
+      MTX_WEBRTCADDITIONALHOSTS: ${PREVIEW_HOST:?set PREVIEW_HOST to the public hostname}
+    volumes: ["./mediamtx.yml:/mediamtx.yml:ro"]
+    ports:
+      # 8889 signalling and 8888 HLS sit behind nginx; 8189/udp carries the
+      # video and must reach browsers directly.
+      - "127.0.0.1:8889:8889"
+      - "127.0.0.1:8888:8888"
+      - "8189:8189/udp"
+      # Ingest and control API stay on loopback: neither is authenticated.
+      - "127.0.0.1:8554:8554"
+      - "127.0.0.1:9997:9997"
+    networks: [control]
+
+  api:
+    image: registry.example.com/camtunnel/cam-dashboard-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      CONNECT_MODE: agent
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: [work:/var/lib/cam/work]
+    networks: [control]
+
+  web:
+    image: registry.example.com/camtunnel/cam-dashboard-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on: [api]
+    ports: ["127.0.0.1:3000:3000"]
+    networks: [control]
+
+  agent:
+    image: registry.example.com/camtunnel/cam-dashboard-agent:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: [.env]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    # Winding up a live recording means joining and uploading what is on disk.
+    # The 10s default kills that mid-upload and strands the segments.
+    stop_grace_period: 120s
+    # Creating a namespace is a mount: NET_ADMIN alone gives "Operation not
+    # permitted", adding SYS_ADMIN gives "Permission denied" from AppArmor.
+    # All three are required. See docker-compose.yml for the long version.
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    security_opt: [apparmor:unconfined]
+    devices: ["/dev/ppp:/dev/ppp"]
+    sysctls: {net.ipv4.ip_forward: 1}
+    volumes:
+      - work:/var/lib/cam/work
+      - ctl:/run/cam/ctl
+    networks: [control]
+
+volumes:
+  pgdata:
+  redisdata:
+  work:
+  ctl:
+
+networks:
+  control:
+    driver: bridge
+    ipam:
+      config: [{subnet: "${CONTROL_SUBNET:-172.28.0.0/16}"}]

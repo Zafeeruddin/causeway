@@ -5,6 +5,11 @@ const MEDIAMTX = process.env.MEDIAMTX_ORIGIN ?? "http://localhost:8889";
 
 const config: NextConfig = {
   reactStrictMode: true,
+  // Traces the server and just the dependencies it actually imports into
+  // .next/standalone, so the runtime image carries no node_modules tree and no
+  // build toolchain. The alternative is shipping the whole workspace to run one
+  // server.
+  output: "standalone",
   // Proxy the API through this origin so the session cookie stays first-party.
   // Pointing the browser straight at :8000 would make it cross-site, and a
   // SameSite=Lax cookie would silently stop being sent.
