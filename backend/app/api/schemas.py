@@ -304,6 +304,8 @@ class CameraCreate(BaseModel):
     team_id: str
     profile_id: str
     name: str = Field(min_length=1, max_length=160)
+    #: The customer's own identifier, kept apart from the name.
+    ref: str = Field(default="", max_length=120)
     location: str = ""
     sources: list[SourceIn] = Field(min_length=1)
 
@@ -335,6 +337,7 @@ class CameraOut(Model):
     profile_name: str = ""
     profile_mode: ReachMode | None = None
     name: str
+    ref: str = ""
     location: str = ""
     is_enabled: bool = True
     sources: list[SourceOut] = []
@@ -356,6 +359,7 @@ class ImportIssueOut(BaseModel):
 
 class ImportPreview(BaseModel):
     name: str
+    ref: str = ""
     location: str = ""
     sources: list[dict[str, Any]] = []
 

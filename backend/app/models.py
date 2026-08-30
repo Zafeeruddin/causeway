@@ -216,6 +216,10 @@ class Camera(Base, TimestampMixin):
         ForeignKey("connection_profiles.id", ondelete="RESTRICT"), index=True
     )
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: The customer's own identifier for this camera -- NVR channel, asset tag,
+    #: the number on the housing. Not unique and not ours: two sites can use the
+    #: same numbering, and it is a label to search by, not a key.
+    ref: Mapped[str] = mapped_column(String(120), default="", index=True)
     location: Mapped[str] = mapped_column(String(255), default="")
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 

@@ -159,7 +159,26 @@ def publish_argv(
         # so the encoder below reads frames that never crossed the PCIe bus.
         # Asking for it on a stream copy would decode a stream nothing decodes.
         argv += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-    argv += ["-fflags", "+genpts", "-i", url.expose()]
+    argv += [
+        # ffmpeg's defaults are tuned for files of unknown shape: analyse up to
+        # five seconds and five megabytes before emitting anything. A live
+        # camera is neither unknown nor in a hurry to repeat itself, and that
+        # analysis is pure latency in front of the first frame -- most of the
+        # wait between pressing Preview and seeing a picture. Cutting it costs
+        # nothing; it is strictly less work.
+        "-analyzeduration",
+        "1000000",
+        "-probesize",
+        "1000000",
+        # nobuffer and low_delay stop the demuxer holding frames back to smooth
+        # delivery, which is the wrong trade for a monitor view.
+        "-fflags",
+        "+genpts+nobuffer",
+        "-flags",
+        "low_delay",
+        "-i",
+        url.expose(),
+    ]
     argv += _transcode_argv(accel) if transcode else ["-c", "copy"]
     argv += [
         "-f",

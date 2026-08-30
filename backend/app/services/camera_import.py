@@ -30,7 +30,15 @@ COLUMN_ALIASES: dict[str, str] = {
     "camera": "name",
     "cameraname": "name",
     "title": "name",
-    "id": "name",
+    "label": "name",
+    "id": "ref",
+    "cameraid": "ref",
+    "camid": "ref",
+    "ref": "ref",
+    "reference": "ref",
+    "channel": "ref",
+    "assettag": "ref",
+    "serial": "ref",
     "rtsp": "rtsp_url",
     "rtspurl": "rtsp_url",
     "url": "rtsp_url",
@@ -75,6 +83,11 @@ class ParsedSource:
 @dataclass(slots=True)
 class ParsedCamera:
     name: str
+    #: The identifier this camera has in the customer's own world -- an NVR
+    #: channel, an asset tag, a number painted on the housing. Kept apart from
+    #: the name because they answer different questions: the name is what a
+    #: person calls it, the ref is what they will be given over the radio.
+    ref: str = ""
     location: str = ""
     sources: list[ParsedSource] = field(default_factory=list)
 
@@ -153,17 +166,26 @@ def parse_source_url(raw: str) -> ParsedSource:
     )
 
 
-def default_name_for(source: ParsedSource, index: int) -> str:
-    """A name people can recognise, derived from the URL when none was given."""
+def default_name_for(source: ParsedSource, index: int, ref: str = "") -> str:
+    """A name people can recognise, derived from what we were given.
+
+    An address alone is a poor name -- a list of them is unreadable, and
+    ``10.244.116.70`` tells nobody which door it is pointing at. So the ref goes
+    first when there is one, and the address stays as the part that makes it
+    unique. Anything better than this comes from the person importing, which is
+    why both fields exist.
+    """
     path = urlsplit(source.url).path.strip("/")
     tail = path.split("/")[-1] if path else ""
-    if tail and not tail.isdigit() and "." not in tail:
-        return f"{source.host} {tail}"
-    return f"{source.host}" if source.host else f"camera {index}"
+    stream = tail if tail and not tail.isdigit() and "." not in tail else ""
+
+    parts = [p for p in (ref.strip(), source.host, stream) if p]
+    return " · ".join(parts) if parts else f"camera {index}"
 
 
 def parse_pasted(text: str) -> ImportReport:
-    """One stream per line. ``name, url`` is honoured; a bare URL is fine.
+    """One stream per line. ``ref, name, url`` and ``name, url`` are both
+    honoured, and a bare URL is fine.
 
     Deliberately forgiving about separators -- people paste out of Slack, out of
     a terminal, and out of a spreadsheet cell, and all three arrive differently.
@@ -176,14 +198,18 @@ def parse_pasted(text: str) -> ImportReport:
         if not line or line.startswith("#"):
             continue
 
-        name, url = _split_name_and_url(line)
+        ref, name, url = _split_fields(line)
         try:
             source = parse_source_url(url)
         except InvalidStreamUrl as exc:
             report.rejected.append(ImportIssue(number, _shorten(line), str(exc)))
             continue
 
-        camera = ParsedCamera(name=name or default_name_for(source, number), sources=[source])
+        camera = ParsedCamera(
+            name=name or default_name_for(source, number, ref),
+            ref=ref,
+            sources=[source],
+        )
         if camera.dedupe_key in seen:
             report.duplicates.append(
                 ImportIssue(number, _shorten(url), f"same stream as line {seen[camera.dedupe_key]}")
@@ -228,7 +254,11 @@ def parse_csv(content: str | bytes) -> ImportReport:
         fields = {
             mapping[k]: (v or "").strip() for k, v in row.items() if k in mapping and mapping[k]
         }
-        camera = ParsedCamera(name=fields.get("name", ""), location=fields.get("location", ""))
+        camera = ParsedCamera(
+            name=fields.get("name", ""),
+            ref=fields.get("ref", ""),
+            location=fields.get("location", ""),
+        )
 
         for column, kind in (("rtsp_url", SourceKind.RTSP), ("hls_url", SourceKind.HLS)):
             raw = fields.get(column, "")
@@ -252,7 +282,7 @@ def parse_csv(content: str | bytes) -> ImportReport:
         if not camera.sources:
             continue
         if not camera.name:
-            camera.name = default_name_for(camera.sources[0], number)
+            camera.name = default_name_for(camera.sources[0], number, camera.ref)
         if camera.dedupe_key in seen:
             report.duplicates.append(
                 ImportIssue(number, camera.name, f"same stream as row {seen[camera.dedupe_key]}")
@@ -264,12 +294,33 @@ def parse_csv(content: str | bytes) -> ImportReport:
     return report
 
 
-def _split_name_and_url(line: str) -> tuple[str, str]:
+def _split_fields(line: str) -> tuple[str, str, str]:
+    """Split ``[ref,] [name,] url`` into its three parts.
+
+    One field before the URL is a name, which is what this accepted before and
+    what most pasted lists look like. Two are a ref and a name, in that order,
+    because that is the order they appear in every NVR export we have seen. A
+    bare URL is still fine.
+    """
     match = re.search(r"(?P<scheme>rtsps?|https?)://", line, re.I)
     if match is None:
-        return "", line
-    prefix = line[: match.start()].strip().strip(",;\t|").strip()
-    return prefix, line[match.start() :].strip()
+        return "", "", line
+    prefix = line[: match.start()].strip()
+    url = line[match.start() :].strip()
+    if not prefix.strip(",;\t| "):
+        return "", "", url
+
+    fields = [part.strip() for part in re.split(r"[,;\t|]", prefix)]
+    # Exactly one trailing empty: the separator sitting between the last field
+    # and the URL. Interior empties are kept, because they are how someone says
+    # "an id and no name" -- `CAM-14,,rtsp://...` -- and dropping them all would
+    # turn that into a camera named CAM-14 with no id at all.
+    if fields and not fields[-1]:
+        fields.pop()
+
+    if len(fields) >= 2:
+        return fields[0], " ".join(f for f in fields[1:] if f), url
+    return "", fields[0], url
 
 
 def _normalise(name: str) -> str:

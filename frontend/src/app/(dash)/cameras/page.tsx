@@ -205,9 +205,20 @@ function CameraRow({
         />
         <Dot tone={health} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{camera.name}</p>
+          <div className="flex items-center gap-2">
+            {/* The identifier the customer uses over the radio, not ours. */}
+            {camera.ref ? (
+              <span className="shrink-0 rounded bg-ink-3 px-1.5 py-0.5 font-mono text-2xs text-fg-2">
+                {camera.ref}
+              </span>
+            ) : null}
+            <p className="truncate text-sm font-medium">{camera.name}</p>
+          </div>
           <p className="truncate text-xs text-fg-3">
-            {camera.location ? `${camera.location} · ` : ""}
+            {/* The address is a fact about the camera, not its name. */}
+            <span className="font-mono">{addressOf(camera)}</span>
+            {camera.location ? ` · ${camera.location}` : ""}
+            {" · "}
             {camera.profile_name
               ? `${camera.profile_name}${camera.profile_mode ? ` (${modeLabel(camera.profile_mode)})` : ""}`
               : "no profile"}
@@ -303,6 +314,15 @@ function Micro({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** Where this camera lives, taken from whichever source travels the tunnel. */
+function addressOf(camera: Camera): string {
+  const primary = camera.sources.find((s) => s.kind === "rtsp") ?? camera.sources[0];
+  if (!primary) return "no source";
+  return primary.port && primary.port !== 554
+    ? `${primary.host}:${primary.port}`
+    : primary.host;
+}
+
 function cameraTone(sources: Source[]): Tone {
   if (!sources.length) return "muted";
   if (sources.some((s) => s.last_probe_ok === false)) return "bad";
@@ -328,6 +348,12 @@ function credentialsInUrl(url: string): { username: string; password: string } |
   const [user, ...rest] = authority[1]!.split(":");
   if (!user) return null;
   return { username: decode(user), password: decode(rest.join(":")) };
+}
+
+/** The host out of a stream URL, for building a name before the server sees it. */
+function hostOf(url: string): string {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/@\s]+@)?([^/:?\s]+)/i.exec(url.trim());
+  return match?.[1] ?? "";
 }
 
 function decode(value: string): string {
@@ -356,6 +382,7 @@ function AddCamerasModal({
   const [preview, setPreview] = useState<ImportResult | null>(null);
 
   const [name, setName] = useState("");
+  const [ref, setRef] = useState("");
   const [rtsp, setRtsp] = useState("");
   const [hls, setHls] = useState("");
   const [username, setUsername] = useState("");
@@ -371,6 +398,15 @@ function AddCamerasModal({
   // Derived rather than written into the fields: a URL edited back to a plain
   // one has to give the person their own typing back, not the NVR's.
   const fromUrl = useMemo(() => credentialsInUrl(rtsp), [rtsp]);
+
+  // Shown as the placeholder so the person can see what they will get, and
+  // sent when they leave the field empty. The server builds the same thing for
+  // bulk imports, so a camera added by hand and one added from a spreadsheet
+  // end up named the same way.
+  const suggestedName = useMemo(() => {
+    const host = hostOf(rtsp);
+    return [ref.trim(), host].filter(Boolean).join(" · ");
+  }, [ref, rtsp]);
   const shownUsername = fromUrl ? fromUrl.username : username;
   const shownPassword = fromUrl ? fromUrl.password : password;
 
@@ -391,7 +427,8 @@ function AddCamerasModal({
         await api.createCamera({
           team_id: teamId,
           profile_id: profileId,
-          name,
+          name: name.trim() || suggestedName,
+          ref: ref.trim(),
           sources: [
             ...(rtsp
               ? [
@@ -475,9 +512,33 @@ function AddCamerasModal({
 
         {mode === "single" ? (
           <div className="flex flex-col gap-4">
-            <Field label="Name">
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Gate camera" />
-            </Field>
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,10rem)_1fr]">
+              <Field
+                label="Camera ID"
+                hint="Yours, not ours. Optional."
+              >
+                <Input
+                  value={ref}
+                  onChange={(e) => setRef(e.target.value)}
+                  placeholder="CAM-14"
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <Field
+                label="Name"
+                hint={
+                  ref || rtsp
+                    ? "Left empty, one is built from the ID and the address."
+                    : "What people will call it."
+                }
+              >
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={suggestedName || "Gate camera"}
+                />
+              </Field>
+            </div>
             <Field label="RTSP URL">
               <Input
                 value={rtsp}
@@ -535,7 +596,7 @@ function AddCamerasModal({
         ) : mode === "paste" ? (
           <Field
             label="One stream per line"
-            hint="A leading name is honoured: “Gate camera, rtsp://…”. Blank lines and # comments are ignored."
+            hint="“id, name, rtsp://…” — or “name, rtsp://…”, or just the URL. Leave the name empty (“CAM-14,, rtsp://…”) and one is built from the id and the address. Blank lines and # comments are ignored."
           >
             <Textarea
               rows={8}
@@ -587,7 +648,12 @@ function ImportPreviewPanel({ result }: { result: ImportResult }) {
       <div className="max-h-56 overflow-y-auto">
         {result.cameras.map((camera, i) => (
           <div key={i} className="flex items-center gap-3 border-b border-line-soft px-4 py-2">
-            <span className="w-40 shrink-0 truncate text-xs text-fg-2">{camera.name}</span>
+            <span className="flex w-40 shrink-0 items-center gap-1.5">
+              {camera.ref ? (
+                <span className="shrink-0 font-mono text-2xs text-fg-3">{camera.ref}</span>
+              ) : null}
+              <span className="truncate text-xs text-fg-2">{camera.name}</span>
+            </span>
             <span className="truncate font-mono text-2xs text-fg-3">
               {camera.sources.map((s) => s.url).join("  ")}
             </span>
