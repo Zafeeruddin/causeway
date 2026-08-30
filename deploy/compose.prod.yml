@@ -5,6 +5,14 @@
 #
 #   docker compose -f compose.prod.yml --env-file .env up -d
 #
+# Every host-side port is overridable, because a machine that already runs other
+# things will collide with at least one of them:
+#
+#   API_BIND=127.0.0.1:8100     WEB_BIND=127.0.0.1:3000
+#   WHEP_BIND=127.0.0.1:8889    MEDIA_BIND=8189
+#
+# Only MEDIA_BIND is public. Everything else is loopback for nginx to proxy.
+#
 # Every service restarts unless stopped, so the stack survives a reboot.
 
 name: cam-dashboard
@@ -45,14 +53,16 @@ services:
       MTX_WEBRTCADDITIONALHOSTS: ${PREVIEW_HOST:?set PREVIEW_HOST to the public hostname}
     volumes: ["./mediamtx.yml:/mediamtx.yml:ro"]
     ports:
-      # 8889 signalling and 8888 HLS sit behind nginx; 8189/udp carries the
-      # video and must reach browsers directly.
-      - "127.0.0.1:8889:8889"
-      - "127.0.0.1:8888:8888"
-      - "8189:8189/udp"
-      # Ingest and control API stay on loopback: neither is authenticated.
-      - "127.0.0.1:8554:8554"
-      - "127.0.0.1:9997:9997"
+      # WHEP signalling, for nginx to proxy. Loopback only.
+      - "${WHEP_BIND:-127.0.0.1:8889}:8889"
+      # The video itself. This one is public: it goes straight from MediaMTX to
+      # the browser over UDP and does not pass through nginx.
+      - "${MEDIA_BIND:-8189}:8189/udp"
+      #
+      # RTSP ingest (8554) and the control API (9997) are deliberately NOT
+      # published. The agent reaches them as `mediamtx:8554` and `mediamtx:9997`
+      # over this network; the only thing a host port would serve is a
+      # single-process dev run, and neither endpoint is authenticated.
     networks: [control]
 
   api:
@@ -64,7 +74,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    ports: ["127.0.0.1:8000:8000"]
+    # Behind nginx. Move the host side with API_BIND if 8000 is taken.
+    ports: ["${API_BIND:-127.0.0.1:8000}:8000"]
     volumes: [work:/var/lib/cam/work]
     networks: [control]
 
@@ -72,7 +83,7 @@ services:
     image: registry.example.com/camtunnel/cam-dashboard-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on: [api]
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["${WEB_BIND:-127.0.0.1:3000}:3000"]
     networks: [control]
 
   agent:
