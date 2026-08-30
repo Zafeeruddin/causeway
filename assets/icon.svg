@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Camera Tunnel">
+  <title>Camera Tunnel</title>
+  <!-- Favicon cut of assets/logo.svg: one arch fewer and a heavier lens, because
+       three strokes and a ring turn to mush at 16 pixels. -->
+  <rect width="64" height="64" rx="14" fill="#0d1318"/>
+  <g fill="none" stroke="#e6eef3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 53V31a21 21 0 0 1 42 0v22" stroke-width="5" opacity=".4"/>
+    <path d="M22 53V34a10 10 0 0 1 20 0v19" stroke-width="5"/>
+  </g>
+  <circle cx="32" cy="36" r="6.5" fill="#79b7d8"/>
+</svg>

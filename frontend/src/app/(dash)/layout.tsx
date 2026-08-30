@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { useLive } from "@/lib/useLive";
 import { administers, type Me } from "@/lib/types";
+import { VERSION } from "@/lib/version";
 import { Button, Dot, cx } from "@/components/ui";
 
 /**
@@ -99,6 +100,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             >
               <Dot tone={connected ? "ok" : "warn"} />
               {connected ? "live" : "reconnecting"}
+            </span>
+            {/* Which build this is. Costs a badge and answers the first
+                question of every support conversation. */}
+            <span
+              className="hidden font-mono text-2xs text-fg-3 lg:block"
+              title="Deployed version"
+            >
+              v{VERSION}
             </span>
             <span className="hidden text-xs text-fg-3 sm:block">{me.email}</span>
             <Button size="sm" variant="quiet" onClick={signOut}>

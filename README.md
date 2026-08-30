@@ -1,176 +1,149 @@
-# Camera Tunnel Control Plane
+<div align="center">
 
-Team-scoped dashboard for reaching cameras that live on a restricted network:
-dial a VPN, open SSH forwards, preview live in the browser, record RTSP and HLS
-side by side — without a dropped link costing the whole recording.
+<img src="assets/logo.svg" alt="" width="88" height="88">
 
-- **Architecture:** https://claude.ai/code/artifact/0c411c17-f05f-49b5-9dec-82e45e49c51a
-- **Deferred work and how we'd implement it:** [ROADMAP.md](ROADMAP.md)
-- **Original requirements:** [camera.MD](camera.MD)
-- **Storage runbook:** [deploy/versity-setup.md](deploy/versity-setup.md)
+# Camera Tunnel
 
-## Status
+**Reach, watch and record cameras that live on a network you are not on.**
 
-Phase 1, in progress. What exists and is tested:
+[![version](https://img.shields.io/badge/version-0.2.0-79b7d8)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-267%20passing-4c9a6a)](backend/tests)
+[![python](https://img.shields.io/badge/python-3.12-3776ab)](backend/pyproject.toml)
+[![next](https://img.shields.io/badge/next.js-16-black)](frontend/package.json)
 
-| Area | State |
-|---|---|
-| VPN drivers (Fortinet, GlobalProtect/Palo Alto, WireGuard, direct) | done, tested against real client output |
-| Certificate-trust flow (gate 2) | done |
-| Network namespace per profile + kill-switch routing | done |
-| SSH ControlMaster tunnel manager + port pool | done |
-| Eight-gate ladder with per-mode skipping | done |
-| Schema (13 tables) and team scoping | done |
-| Secrets (sealed local, Vault-ready interface) | done |
-| Credential redaction | done |
-| Storage on hosted Versity + retention/admission | done |
-| Compose stack (Postgres, Redis, MediaMTX, api, agent) | done |
-| REST/WebSocket API surface | done |
-| Recorder worker (segments, redial ladder, gaps.json) | done |
-| Retention sweep and admission accounting | done |
-| Dashboard frontend | done |
-| Connect dispatched from the API to the agent | done |
-| RTSP + HLS side-by-side compare view | done |
-| Live preview in the browser (in-namespace publisher, WebRTC out) | done |
+</div>
 
-## Getting started
+---
 
-```bash
-cp .env.example .env
-# Fill in AWS_SECRET_ACCESS_KEY for s3.example.com — see deploy/versity-setup.md
-# Generate the sealing key and fill in SECRETS_KEY:
-python3 -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"
+Cameras on a customer's private network are behind a VPN, then behind a jump
+host, then on an address only that jump host can route to. Getting a picture out
+of one is a chain of four or five hops, any of which can fail, and when it does
+the usual answer is "it isn't working" with no indication of which hop.
 
-make up        # bring up the whole stack
-make test      # 145 tests, no network required
-make api       # run the API locally against compose infra
-make agent     # run the recorder against the same infra
+Camera Tunnel makes that chain a first-class thing: eight named gates, walked in
+order, each reporting for itself. A hop a profile does not use is shown as
+**skipped**, not hidden, so *not needed* never looks like *never checked*.
+
+```
+  VPN dial → certificate trust → whitelist → route to jump host
+     → SSH auth → port forward → camera reachable → stream handshake
 ```
 
-`make help` lists the rest.
+## What it does
 
-## How it fits together
+- **Connects** — Fortinet, GlobalProtect/Palo Alto, WireGuard, or nothing at all
+  when the cameras are already reachable. One network namespace per profile, so
+  three teams can hold three VPNs on one host and a dropped tunnel takes its own
+  traffic down and nobody else's.
+- **Watches** — live preview in the browser over WebRTC. Two people watching one
+  camera cost one camera session, because cameras cap those hard.
+- **Records** — RTSP and the inferred HLS feed at once, into sealed segments
+  that survive a mid-write outage, uploaded to S3-compatible storage. A recording
+  that lost thirty seconds says so, and says *why*, in a sidecar that travels
+  with the file.
+- **Compares** — the raw feed and the inferred feed side by side on one
+  transport, aligned on wall-clock time so a gap in one does not silently shift
+  the other.
 
-Four modes of reaching a camera, declared once on a **connection profile**:
+## Three ideas worth knowing
 
-| Mode | Path | Used when |
+**The kill switch is a routing fact, not a policy.** Inside a profile's
+namespace the default route belongs to the tunnel. When the VPN drops there is
+no route for camera traffic to fall back to, so it fails instead of quietly
+leaving by the host's normal egress. Control-plane traffic reaches Postgres and
+Redis over a more specific route that survives the default being replaced.
+
+**Segments are MPEG-TS, not MP4.** An MP4 becomes readable when its `moov` atom
+is written, which happens when the muxer exits cleanly — exactly what does not
+happen when a tunnel dies mid-write. Whatever reached the disk as TS plays. The
+session is concatenated to MP4 at the end, where there is a clean exit to rely
+on.
+
+**A failure names the hop that failed.** Not "connection error". The database
+password, the missing kernel module, the camera that authenticated and then
+refused the stream — each arrives as the sentence an operator can act on. Most
+of the tests in this repo exist to keep it that way.
+
+## Quick start
+
+```bash
+git clone https://github.com/Zafeeruddin/camtunnel && cd camtunnel
+cp .env.example .env          # then edit: secrets, storage, PREVIEW_HOST
+docker compose up -d --build
+docker compose exec api cam init-db
+docker compose exec api cam create-admin you@example.com
+```
+
+The dashboard is on `:3000`, the API on `:8000`. For a real deployment —
+nginx, TLS, a domain, GPU passthrough, and the resource numbers behind the
+sizing — see **[deploy/production.md](deploy/production.md)**.
+
+## Roles
+
+| | Superadmin | Admin | Viewer |
+|---|---|---|---|
+| Teams | all, can create | own only | own only |
+| Connection profiles | all | own teams | **section not shown** |
+| Cameras | all | add, remove, test | see, preview, record, download |
+| Accounts | any role | viewers, own teams | — |
+
+Viewers are not shown the plumbing and then stopped at the door — the sections
+are absent. Most people using this want to watch a camera and take a clip away,
+and a menu full of gateways and storage thresholds is a usability problem for
+them, not a security one. The server enforces the same boundary either way.
+
+## What it costs to run
+
+Measured, not estimated — full numbers in
+[deploy/production.md](deploy/production.md).
+
+| | CPU | Memory |
 |---|---|---|
-| `direct` | app → camera | the app host already sits on the camera network |
-| `vpn_only` | app → VPN → camera | the VPN routes to cameras with no VM in between |
-| `jump_only` | app → jump VM → camera | already on the network, cameras behind the VM |
-| `vpn_jump` | app → VPN → jump VM → camera | off-network, cameras behind the VM |
+| Idle, whole stack | ~5% of one core | ~275 MB |
+| Preview, H.264 (stream copy) | 3% of one core | 46 MB |
+| Preview, H.265 (transcoded) | 55% of one core, or a fraction on NVENC | 222 MB |
+| Recording, any codec | 1% of one core | 43 MB |
 
-Everything downstream reads the profile and skips the hops that are not there.
-The gate ladder reports skipped rungs rather than omitting them, so "we didn't
-need a VPN" is distinguishable from "the VPN check never ran".
-
-### The seams that matter
-
-Three interfaces carry the design. Changing what is behind them should never
-reach the rest of the system:
-
-- **`VpnDriver`** (`app/net/vpn/base.py`) — four methods. A FortiClient build
-  that satisfies endpoint posture is a fifth implementation, not a rewrite.
-  ROADMAP entry 1 depends on this staying true.
-- **`SecretsBackend`** (`app/security/secrets.py`) — three methods. Company
-  Vault is a second implementation plus a migration script. ROADMAP entry 3.
-- **`Runner`** (`app/net/runner.py`) — decides whether a command runs plainly or
-  inside a VPN's network namespace. Every network-touching component takes one,
-  and the ssh layer takes it *per call* rather than holding one, because a
-  single `TunnelManager` serves profiles in different namespaces. There is no
-  default: a missing runner is a signature error, not a silent misconfiguration.
-  This is also why the whole stack can be tested without a network.
-- **`SourcePath`** (`app/recorder/session.py`) — four methods: open the path,
-  say which hop died, close it. The recorder has no reconnection logic of its
-  own; it reopens the path and starts the next run. A scheduled recording or a
-  second reachability mode plugs in here.
-- **`ConnectionGateway`** (`app/services/gateway.py`) — the four operations that
-  touch the camera network, satisfied either by `ConnectionService` directly or
-  by a request to the agent. Chosen once at startup, so no route knows which
-  deployment it is in.
-
-### Things that will bite if you change them carelessly
-
-- **RTSP must be pinned to TCP.** `ssh -L` forwards TCP only; UDP RTSP through a
-  tunnel connects and then delivers nothing at all.
-- **Loopback comes up down inside a new namespace.** `ssh -L` binds `127.0.0.1`
-  and ffmpeg dials it, so a namespace without `lo` up forwards nothing and says
-  nothing about why.
-- **The control route is deliberately not a default route.** If it were, a
-  dropped VPN would silently reroute camera traffic onto the host network
-  instead of failing. That ordering is the kill-switch.
-- **`ExitOnForwardFailure=yes` is not optional.** Without it ssh reports success
-  and forwards nothing.
-- **The ssh layer must run in the profile's own namespace, master and forwards
-  alike.** A jump host behind a VPN is only routable from inside it, and
-  `ssh -L` binds `127.0.0.1` in whatever namespace ssh ran in — which has to be
-  the one ffmpeg dials from, or the port is bound on a loopback nobody is
-  listening to. Both failures are quiet: the second one gives you a green gate
-  ladder and a tunnel that carries nothing.
-- **One SSH master per jump host *per namespace*.** Two profiles can name the
-  same jump host and reach it by different paths; sharing a master would send
-  one profile's forwards down the other's tunnel and look like it worked.
-- **Versity is path-style.** Virtual-host addressing resolves
-  `cam-recordings.s3.example.com`, which does not exist, and fails like an outage.
-- **Versity has no lifecycle rules and no bucket quotas.** The retention sweep
-  and the pre-recording admission check are the only ceiling there is.
-- **Uploads still do not run inside a VPN namespace**, even though storage is on
-  our own network and a route would work. An upload started in there dies with
-  the tunnel and with the namespace, and a customer VPN advertising `10.0.0.0/8`
-  will collide with a storage host at `10.x.x.x`. Recorders write to the work
-  volume; a shipper outside every namespace uploads. `CONTROL_CIDRS` exists for
-  the cases that genuinely do need in-namespace reach.
-- **The FortiClient GUI shows SHA-1; `openfortivpn` pins SHA-256.** Always take
-  the digest from the client's own output, never from what the GUI displayed.
-- **Segments are MPEG-TS, not MP4.** An MP4 is unreadable until its `moov` atom
-  is written on clean exit — exactly what does not happen when a tunnel dies
-  mid-write. The session is joined into an MP4 at the end, where there is a
-  clean exit to rely on.
-- **The recording deadline is wall clock.** An outage shortens the file and is
-  recorded as a gap; it does not extend the session. Extending it would hand
-  back footage of a different five minutes and double the storage the admission
-  check was sized against.
-- **The compare view's transport is wall clock too, and that is not cosmetic.**
-  A session file is a concatenation of what was captured, so after a fifteen
-  second outage everything sits fifteen seconds earlier in the file than it
-  happened in the world. Seeking both players to the same media position
-  compares frames minutes apart and looks exactly like the inference being
-  wrong. `app/services/playback.py` maps a moment to each feed's own position;
-  `frontend/src/lib/playback.ts` mirrors it.
-- **Network namespaces cannot be shared between containers.** The agent is the
-  only process that can dial, forward or record, which is why it is the only one
-  with `NET_ADMIN`, and why `CONNECT_MODE=agent` sends the API's connect,
-  disconnect, trust and camera-test straight to it over Redis. Unset (the
-  default) runs them in process, which is what `make api` and the tests use.
-- **The preview publish target must be an address, not a hostname.** Docker's
-  resolver lives on the container's own loopback, which does not exist inside a
-  network namespace, so a name there fails to resolve and the failure reads as
-  though the camera were down. `app/services/preview.py` resolves it in the
-  agent and hands ffmpeg an IP.
-- **WebRTC advertises the addresses MediaMTX can see, which in compose are the
-  bridge's.** Unless `webrtcAdditionalHosts` carries the address browsers
-  actually dial — compose sets it from `PREVIEW_HOST` — a viewer on any other
-  machine negotiates a session and then waits for video offered at 172.28.x.x.
-  Nothing errors; the tile just never starts.
-- **A preview holds a camera session open, so the reaper is not optional.**
-  Cameras cap concurrent sessions hard, and a tab left open on a wall display is
-  a session a recording cannot have. `PREVIEW_IDLE_SECONDS` is a grace period
-  for reloads, not a suggestion.
+A configured camera costs nothing. Cost arrives when somebody watches or
+records. H.265 previews are the only expensive thing here, because no mainstream
+browser decodes H.265 over WebRTC — those and only those are re-encoded, on an
+NVIDIA card when there is one, and the machine refuses a stream past its budget
+rather than admitting it and juddering across every stream at once.
 
 ## Layout
 
 ```
 backend/app/
-  config.py enums.py db.py models.py     schema, settings, team scoping
-  security/  secrets.py redaction.py     sealed store; credential-safe URLs
-  net/       runner.py netns.py          the exec seam; per-profile namespaces
-             ssh.py ports.py             ControlMaster forwards; port leases
-             vpn/                        four drivers behind one interface
-  gates/     ladder.py probes.py         the eight gates
-  api/       auth.py                     argon2 + signed session cookies
-  services/  preview.py                  one publisher per camera, reaped when idle
-             mediamtx.py                 preview paths added and dropped over its API
-  storage/   client.py keys.py           Versity S3 gateway; team-scoped keys
-             retention.py                admission check + oldest-first sweep
-deploy/                                  Dockerfiles, MediaMTX config, storage runbook
+  net/          namespaces, ssh, vpn drivers, process runners
+  gates/        the eight-rung ladder
+  recorder/     ffmpeg argv, session supervisor, shipper, accelerators
+  services/     connections, preview, playback, camera import
+  storage/      object store, key layout, retention
+  api/routes/   auth, profiles, cameras, recordings, admin
+frontend/src/   Next.js dashboard
+deploy/         Dockerfiles, production compose, runbooks
 ```
+
+`make test` · `make lint` · `make up`
+
+## Documentation
+
+- **[deploy/production.md](deploy/production.md)** — deploying, sizing, nginx,
+  and the things that fail silently if you skip them
+- **[deploy/versity-setup.md](deploy/versity-setup.md)** — the storage gateway
+- **[ROADMAP.md](ROADMAP.md)** — deferred work, each entry with what would
+  trigger it and what would have to change
+- **[CHANGELOG.md](CHANGELOG.md)** — what shipped when
+
+## Status
+
+**0.2.0 — running in production for its first customer.**
+
+Still `0.x` on purpose: the schema has no migrations yet
+([ROADMAP entry 10](ROADMAP.md)), so a release can still require a rebuild
+rather than an upgrade. `1.0.0` is the version that promises otherwise.
+
+## License
+
+Not yet licensed for redistribution. An open-source license is planned; until
+one is added here, all rights are reserved.
