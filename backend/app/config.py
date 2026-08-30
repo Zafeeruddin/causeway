@@ -5,8 +5,9 @@ from __future__ import annotations
 import base64
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import quote
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +18,17 @@ class Settings(BaseSettings):
     app_secret_key: str = "dev-only-not-for-production"
     log_level: str = "INFO"
 
-    database_url: str = "postgresql+asyncpg://cam:cam@localhost:5432/cam"
+    # Composed from the parts below unless set explicitly. Two copies of one
+    # password is a trap: change POSTGRES_PASSWORD alone and the server is
+    # rebuilt with the new one while every client still dials with the old,
+    # which surfaces as "password authentication failed" for a password nobody
+    # is using any more. There is one place to change it.
+    database_url: str = ""
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    postgres_user: str = "cam"
+    postgres_password: str = "cam"
+    postgres_db: str = "cam"
     redis_url: str = "redis://localhost:6379/0"
 
     #: 32 raw bytes, base64-encoded. Empty is tolerated in dev and refused elsewhere.
@@ -108,6 +119,23 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError(f"SECRETS_KEY must decode to 32 bytes, got {len(raw)}")
         return v
+
+    @model_validator(mode="after")
+    def _compose_database_url(self) -> Settings:
+        """Build the DSN from the parts unless one was given outright.
+
+        The password is percent-encoded on the way in: a DSN is a URL, and a
+        password containing ``@`` or ``/`` splits it in the wrong place and
+        produces a connection error that says nothing about quoting.
+        """
+        if not self.database_url:
+            user = quote(self.postgres_user, safe="")
+            password = quote(self.postgres_password, safe="")
+            self.database_url = (
+                f"postgresql+asyncpg://{user}:{password}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
+        return self
 
     @property
     def is_dev(self) -> bool:
