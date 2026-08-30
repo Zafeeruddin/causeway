@@ -6,6 +6,8 @@ and the accounting are exercised as SQL rather than as intent.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -112,6 +114,117 @@ async def test_claiming_marks_the_recording_started(sessions, fixture_ids):
         recording = await db.get(Recording, fixture_ids["recording"])
         assert recording.state == RecordingState.RECORDING
         assert recording.started_at is not None
+
+
+def _fast_poll(monkeypatch, worker_module):
+    """A poll interval short enough that the loop really spins during a test.
+
+    Without this the loop sleeps two seconds between attempts and a test that
+    waits a quarter of a second sees exactly one, which would pass whether or
+    not the repeats are being suppressed.
+    """
+    real = worker_module.settings()
+
+    class Fast:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        agent_poll_seconds = 0.01
+
+    monkeypatch.setattr(worker_module, "settings", lambda: Fast())
+
+
+async def _run_briefly(agent, seconds: float = 0.3) -> None:
+    task = asyncio.create_task(agent._claim_loop())
+    await asyncio.sleep(seconds)
+    agent._stopping.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_a_repeating_claim_failure_is_logged_once_not_every_poll(sessions, monkeypatch):
+    """A database that refuses the agent refuses it every two seconds. A full
+    traceback each time buries the one line that matters under forty frames of
+    driver internals, and keeps doing it until the disk fills."""
+    from app.agent import worker as worker_module
+
+    _fast_poll(monkeypatch, worker_module)
+    agent = build_agent(sessions)
+    agent.CLAIM_BACKOFF_MAX = 0.02
+    attempts = 0
+
+    async def always_refused(_slots):
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("outer") from OSError("password authentication failed for user 'cam'")
+
+    logged: list[str] = []
+    monkeypatch.setattr(agent, "claim", always_refused)
+    monkeypatch.setattr(
+        worker_module.log, "error", lambda event, **kw: logged.append(kw.get("reason", event))
+    )
+
+    await _run_briefly(agent)
+
+    assert attempts > 3, "the loop did not actually poll repeatedly"
+    assert len(logged) == 1, f"the same failure was reported {len(logged)} times"
+    # And it names the thing an operator can act on, not the wrapper.
+    assert "password authentication failed" in logged[0]
+
+
+async def test_a_failure_that_changes_is_reported_again(sessions, monkeypatch):
+    from app.agent import worker as worker_module
+
+    _fast_poll(monkeypatch, worker_module)
+    agent = build_agent(sessions)
+    agent.CLAIM_BACKOFF_MAX = 0.02
+    seen = 0
+
+    async def failing(_slots):
+        nonlocal seen
+        seen += 1
+        raise RuntimeError("first" if seen < 4 else "second")
+
+    logged: list[str] = []
+    monkeypatch.setattr(agent, "claim", failing)
+    monkeypatch.setattr(
+        worker_module.log, "error", lambda event, **kw: logged.append(kw.get("reason", ""))
+    )
+
+    await _run_briefly(agent)
+
+    assert len(logged) == 2, f"expected both distinct failures, got {logged}"
+    assert "first" in logged[0] and "second" in logged[1]
+
+
+async def test_recovery_is_announced_so_the_silence_is_not_ambiguous(sessions, monkeypatch):
+    """Suppressing repeats means the log goes quiet either way. It has to say
+    when the quiet started meaning "fixed"."""
+    from app.agent import worker as worker_module
+
+    _fast_poll(monkeypatch, worker_module)
+    agent = build_agent(sessions)
+    agent.CLAIM_BACKOFF_MAX = 0.02
+    seen = 0
+
+    async def recovers(_slots):
+        nonlocal seen
+        seen += 1
+        if seen < 3:
+            raise RuntimeError("still broken")
+        return []
+
+    recovered: list[dict] = []
+    monkeypatch.setattr(agent, "claim", recovers)
+    monkeypatch.setattr(worker_module.log, "error", lambda *a, **k: None)
+    monkeypatch.setattr(
+        worker_module.log, "info", lambda event, **kw: recovered.append({"event": event, **kw})
+    )
+
+    await _run_briefly(agent)
+
+    assert any(r["event"] == "agent.claim_recovered" for r in recovered)
 
 
 async def test_a_full_agent_claims_nothing(sessions, fixture_ids):

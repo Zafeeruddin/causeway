@@ -54,6 +54,9 @@ log = structlog.get_logger(__name__)
 
 
 class Agent:
+    #: Longest gap between claim attempts while the same failure keeps repeating.
+    CLAIM_BACKOFF_MAX = 60.0
+
     def __init__(
         self,
         *,
@@ -192,16 +195,37 @@ class Agent:
     # ---- claiming ------------------------------------------------------
 
     async def _claim_loop(self) -> None:
+        """Poll for queued work, and stay quiet about a failure that is not moving.
+
+        A database that refuses the agent refuses it every two seconds, and a
+        full traceback each time buries the one line that matters -- the
+        password, the missing table -- under forty frames of driver internals,
+        repeated until the disk fills. So a repeat of the same failure is
+        counted rather than printed, and the wait grows until it comes back.
+        """
         poll = settings().agent_poll_seconds
+        wait, previous, repeats = poll, "", 0
         while not self._stopping.is_set():
             try:
                 for recording_id in await self.claim(self.concurrency - len(self._tasks)):
                     task = asyncio.create_task(self._run_recording(recording_id))
                     self._tasks[recording_id] = task
                     task.add_done_callback(partial(self._forget, recording_id))
-            except Exception:  # noqa: BLE001 - a bad poll must not end the loop
-                log.exception("agent.claim_failed")
-            await asyncio.sleep(poll)
+            except Exception as exc:  # noqa: BLE001 - a bad poll must not end the loop
+                reason = _root_cause(exc)
+                if reason == previous:
+                    repeats += 1
+                    # Back off to a minute: nothing here is fixed by asking
+                    # again quickly, and the operator is reading the logs.
+                    wait = min(wait * 2, self.CLAIM_BACKOFF_MAX)
+                else:
+                    log.error("agent.claim_failed", reason=reason, exc_info=exc)
+                    previous, repeats, wait = reason, 0, poll
+            else:
+                if previous:
+                    log.info("agent.claim_recovered", after_failures=repeats + 1)
+                previous, repeats, wait = "", 0, poll
+            await asyncio.sleep(wait)
 
     def _forget(self, recording_id: str, task: asyncio.Task) -> None:
         self._tasks.pop(recording_id, None)
@@ -542,6 +566,19 @@ class _Plan:
     team_slug: str
     requested_seconds: int
     paths: list[ProfileSourcePath]
+
+
+def _root_cause(exc: BaseException) -> str:
+    """The innermost thing that actually went wrong, in one line.
+
+    SQLAlchemy wraps a driver error in a chain several deep, and the outermost
+    message is about the layer that noticed rather than the layer that failed.
+    "password authentication failed for user" is at the bottom.
+    """
+    cause: BaseException = exc
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    return f"{type(cause).__name__}: {cause}".strip()[:300]
 
 
 def _message_for(exc: BaseException) -> str:
