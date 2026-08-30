@@ -227,6 +227,66 @@ async def downloads(
     return links
 
 
+#: States where the agent still owns the recording. Deleting one of these would
+#: race a process that is mid-write and leave objects nobody has a row for.
+IN_FLIGHT = (
+    RecordingState.QUEUED,
+    RecordingState.RECORDING,
+    RecordingState.RECOVERING,
+    RecordingState.FINALIZING,
+)
+
+
+@router.delete("/recordings/{recording_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_recording(
+    recording: Recording = Depends(load_recording),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> None:
+    """Delete a recording and the files behind it.
+
+    Open to anyone who can see it, viewers included: the people who make these
+    are the people who know which ones were a mistake, and making them ask an
+    administrator to tidy up is how a storage budget quietly fills.
+
+    The objects go first. A row deleted before its objects leaves bytes in the
+    bucket that nothing accounts for -- and this gateway has no lifecycle rules,
+    so nothing else will ever collect them. Failing the other way round is
+    recoverable: the row is still there to try again.
+    """
+    if RecordingState(recording.state) in IN_FLIGHT:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This recording is still being made. Wait for it to finish before deleting it.",
+        )
+
+    rows = await db.execute(
+        select(StorageObject).where(
+            StorageObject.recording_id == recording.id, StorageObject.deleted_at.is_(None)
+        )
+    )
+    objects = list(rows.scalars().all())
+    if objects:
+        try:
+            await object_store().delete([obj.s3_key for obj in objects])
+        except StorageError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, exc.user_message) from exc
+
+    freed = sum(obj.bytes for obj in objects)
+    # Cascades take the gaps, segments and storage rows with it.
+    await db.delete(recording)
+    await db.flush()
+    await audit(
+        db,
+        principal,
+        "recording.delete",
+        "recording",
+        recording.id,
+        {"objects": len(objects), "bytes_freed": freed},
+        team_id=recording.team_id,
+    )
+
+
 @router.get("/recordings/{recording_id}/comparison", response_model=ComparisonOut)
 async def comparison(
     recording: Recording = Depends(load_recording),

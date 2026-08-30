@@ -103,6 +103,21 @@ class Settings(BaseSettings):
     #: How often retention runs. Versity expires nothing on its own.
     retention_sweep_seconds: int = 300
 
+    # ---- transcoding ----
+    # Only H.265-and-similar previews cost anything here: an H.264 preview and
+    # every recording are stream copies. See app/recorder/accel.py.
+    #: auto | nvidia | cpu. "auto" uses the card if one is visible in here.
+    transcode_accel: str = "auto"
+    #: Share of the machine this is allowed to spend, per accelerator.
+    gpu_budget_percent: float = 80.0
+    cpu_budget_percent: float = 80.0
+    #: Concurrent NVENC sessions the card will take. Modern drivers lift the old
+    #: 3-session consumer cap; lower this if yours has not.
+    gpu_sessions: int = 16
+    #: Cores one 1080p transcode costs. Measured at 0.55 on ultrafast; the
+    #: default is rounded up so a busy machine is refused before it judders.
+    cpu_cost_per_stream: float = 0.6
+
     gate_timeout_seconds: float = 20.0
     vpn_dial_timeout_seconds: float = 45.0
     heartbeat_seconds: int = 30

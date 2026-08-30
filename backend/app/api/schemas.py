@@ -85,6 +85,14 @@ class UserOut(Model):
     last_login_at: datetime | None = None
 
 
+class UserUpdate(BaseModel):
+    """What may be changed about an account after it exists."""
+
+    role: Role | None = None
+    is_active: bool | None = None
+    display_name: str | None = None
+
+
 class MembershipRequest(BaseModel):
     user_id: str
 

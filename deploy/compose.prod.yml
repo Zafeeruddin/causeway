@@ -101,6 +101,19 @@ services:
     # Creating a namespace is a mount: NET_ADMIN alone gives "Operation not
     # permitted", adding SYS_ADMIN gives "Permission denied" from AppArmor.
     # All three are required. See docker-compose.yml for the long version.
+    # ---- GPU, optional -------------------------------------------------
+    # Only H.265-and-similar previews transcode; everything else is a stream
+    # copy. On a machine with an NVIDIA card and the container toolkit, hand it
+    # through and the agent detects it and uses NVDEC/NVENC. Without this the
+    # card is invisible in here whatever the host has, and the agent correctly
+    # falls back to libx264 -- see app/recorder/accel.py.
+    #
+    # Uncomment both, or set TRANSCODE_ACCEL=cpu to be explicit about not
+    # wanting it.
+    # runtime: nvidia
+    # environment:
+    #   NVIDIA_VISIBLE_DEVICES: all
+    #   NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     cap_add: [NET_ADMIN, SYS_ADMIN]
     security_opt: [apparmor:unconfined]
     devices: ["/dev/ppp:/dev/ppp"]

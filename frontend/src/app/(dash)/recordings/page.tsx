@@ -30,10 +30,20 @@ const LABEL: Record<RecordingState, string> = {
   cancelled: "cancelled",
 };
 
+/** States where the agent still owns the recording; the server refuses these too. */
+const IN_FLIGHT = new Set<RecordingState>([
+  "queued",
+  "recording",
+  "recovering",
+  "finalizing",
+]);
+
 export default function RecordingsPage() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [links, setLinks] = useState<DownloadLink[] | null>(null);
+  const [confirming, setConfirming] = useState<Recording | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -59,6 +69,19 @@ export default function RecordingsPage() {
 
   const nameFor = (id: string) => cameras.find((c) => c.id === id)?.name ?? id.slice(0, 8);
 
+  async function remove(recording: Recording) {
+    setRemoving(recording.id);
+    setConfirming(null);
+    try {
+      await api.deleteRecording(recording.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not delete the recording.");
+    } finally {
+      setRemoving(null);
+    }
+  }
+
   async function openDownloads(recording: Recording) {
     setError("");
     try {
@@ -82,6 +105,29 @@ export default function RecordingsPage() {
       </div>
 
       {error ? <Banner tone="bad" title={error} /> : null}
+
+      {confirming ? (
+        <Modal
+          open
+          onClose={() => setConfirming(null)}
+          title="Delete this recording?"
+          sub="The video files go too, and nothing here can bring them back."
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-fg-2">
+              {nameFor(confirming.camera_id)} ·{" "}
+              {confirming.total_bytes ? bytes(confirming.total_bytes) : "no files"} ·{" "}
+              {ago(confirming.started_at ?? null)}
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button onClick={() => setConfirming(null)}>Keep it</Button>
+              <Button variant="danger" onClick={() => remove(confirming)}>
+                Delete permanently
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
 
       <Card>
         <CardHeader title="All recordings" sub={`${recordings.length} total`} />
@@ -152,6 +198,16 @@ export default function RecordingsPage() {
                           onClick={() => openDownloads(recording)}
                         >
                           Download
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          // In-flight recordings belong to the agent, which is
+                          // still writing them; the server refuses those too.
+                          disabled={IN_FLIGHT.has(recording.state) || removing === recording.id}
+                          onClick={() => setConfirming(recording)}
+                        >
+                          {removing === recording.id ? "Deleting…" : "Delete"}
                         </Button>
                       </div>
                     </td>

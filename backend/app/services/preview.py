@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.enums import SourceKind
 from app.models import Camera, CameraSource
+from app.recorder.accel import AtCapacity, TranscodeBudget
 from app.recorder.ffmpeg import needs_transcode, publish_argv
 from app.recorder.session import SourcePath
 from app.services.connections import ConnectionService
@@ -88,6 +89,8 @@ class _Live:
     #: with it. One camera session still serves all of them.
     watchers: dict[str, str]
     process: asyncio.subprocess.Process
+    #: Whether this stream holds a slot in the transcode budget. Copies do not.
+    transcoding: bool = False
     stderr: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_LINES))
     #: Last time anyone was watching. Starts now, so a preview gets its grace
     #: period before the first viewer has finished negotiating WebRTC.
@@ -122,6 +125,7 @@ class PreviewManager:
         sessions: async_sessionmaker[AsyncSession],
         mediamtx: MediaMtx | None = None,
         path_factory: Callable[[Camera, CameraSource], SourcePath] | None = None,
+        budget: TranscodeBudget | None = None,
     ) -> None:
         self.connections = connections
         self._sessions = sessions
@@ -130,6 +134,10 @@ class PreviewManager:
         # tests supply a scripted path here, and a future reachability model
         # that is not "profile with a tunnel" plugs in without touching this.
         self._path_factory = path_factory or self._profile_path
+        # What this machine will encode, and how much of it at once. Shared by
+        # every preview in the process because the limit is the machine's, not
+        # any one viewer's -- see app/recorder/accel.py.
+        self.budget = budget or TranscodeBudget()
         self._live: dict[str, _Live] = {}
         #: Starts that have not finished yet, so a second request for the same
         #: camera joins one rather than racing it.
@@ -200,9 +208,33 @@ class PreviewManager:
         # made before ffmpeg starts rather than discovered by a browser that
         # negotiates, agrees on nothing, and shows black.
         transcode = needs_transcode(source.codec or "")
-        process = await opened.runner.spawn(
-            publish_argv(opened.url, SourceKind(source.kind), target, transcode=transcode)
-        )
+        if transcode:
+            # Before the process exists, so a machine at capacity says so
+            # instead of starting a sixteenth encoder and making the fifteen
+            # already running stutter for everyone at once.
+            try:
+                await self.budget.reserve()
+            except AtCapacity as exc:
+                raise PreviewError(exc.user_message) from exc
+        try:
+            process = await opened.runner.spawn(
+                publish_argv(
+                    opened.url,
+                    SourceKind(source.kind),
+                    target,
+                    transcode=transcode,
+                    accel=self.budget.accel,
+                )
+            )
+        except Exception:
+            # Nothing to tear down yet -- there is no _Live to carry the
+            # reservation -- so the slot has to be handed back here or the
+            # machine loses a little capacity every time a spawn fails.
+            if transcode:
+                await self.budget.release()
+            with contextlib.suppress(MediaMtxError):
+                await self.mediamtx.remove_path(name)
+            raise
         started = datetime.now(UTC)
         live = _Live(
             info=PreviewInfo(
@@ -216,6 +248,7 @@ class PreviewManager:
             team_id=camera.team_id,
             watchers={},
             process=process,
+            transcoding=transcode,
         )
         asyncio.create_task(_drain(process, live.stderr))
 
@@ -335,6 +368,14 @@ class PreviewManager:
                 live.process.kill()
         with contextlib.suppress(MediaMtxError):
             await self.mediamtx.remove_path(live.info.path)
+        if live.transcoding:
+            # Every path out of a transcoded stream comes through here -- the
+            # last viewer leaving, the reaper, shutdown, and a start that failed
+            # after the reservation -- so the slot is given back in one place
+            # rather than four, and cannot leak the machine's capacity away one
+            # failed preview at a time.
+            live.transcoding = False
+            await self.budget.release()
 
     # ---- the reaper ----------------------------------------------------
 
