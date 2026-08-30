@@ -233,28 +233,35 @@ function RolePicker({
     );
   }
 
+  // The width lives on a wrapper, not on the Select. Select carries `w-full`
+  // from the shared control style, and two Tailwind width utilities on one
+  // element are settled by stylesheet order rather than by which was written
+  // last -- so `w-36` there loses, the control takes the whole row, and the
+  // name it is sitting next to disappears.
   return (
-    <Select
-      aria-label={`Role for ${user.email}`}
-      className="w-36 py-1 text-xs"
-      value={user.role}
-      disabled={busy}
-      onChange={async (event) => {
-        setBusy(true);
-        try {
-          await api.updateUser(user.id, { role: event.target.value });
-          await onChanged();
-        } catch (err) {
-          onError(err instanceof ApiError ? err.message : "Could not change the role.");
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <option value="viewer">viewer</option>
-      <option value="admin">admin</option>
-      {superadmin ? <option value="superadmin">superadmin</option> : null}
-    </Select>
+    <span className="w-36 shrink-0">
+      <Select
+        aria-label={`Role for ${user.email}`}
+        className="py-1 text-xs"
+        value={user.role}
+        disabled={busy}
+        onChange={async (event) => {
+          setBusy(true);
+          try {
+            await api.updateUser(user.id, { role: event.target.value });
+            await onChanged();
+          } catch (err) {
+            onError(err instanceof ApiError ? err.message : "Could not change the role.");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <option value="viewer">viewer</option>
+        <option value="admin">admin</option>
+        {superadmin ? <option value="superadmin">superadmin</option> : null}
+      </Select>
+    </span>
   );
 }
 
