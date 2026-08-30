@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Camera Tunnel">
+  <title>Camera Tunnel</title>
+  <!--
+    A lens at the end of a tunnel: three arches receding to an aperture.
+
+    The arches are the hops - VPN, jump host, forward - and they get smaller and
+    dimmer with distance, which is the product in one picture: the camera is far
+    away and reached through a narrowing path. Stroked rather than filled so it
+    survives at 16px, and monochrome apart from the lens so it reads on a light
+    or a dark tab.
+  -->
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 56V30a28 28 0 0 1 56 0v26" stroke-width="4" opacity=".28"/>
+    <path d="M13 56V32a19 19 0 0 1 38 0v24" stroke-width="4" opacity=".55"/>
+    <path d="M22 56V34a10 10 0 0 1 20 0v22" stroke-width="4"/>
+  </g>
+  <!-- The camera itself: what the tunnel is for. -->
+  <circle cx="32" cy="36" r="5.5" fill="#79b7d8"/>
+  <circle cx="32" cy="36" r="10.5" fill="none" stroke="#79b7d8" stroke-width="2.5" opacity=".45"/>
+</svg>

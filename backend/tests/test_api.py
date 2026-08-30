@@ -499,6 +499,34 @@ async def test_a_viewer_cannot_remove_a_profile(as_member, seeded, direct_profil
     assert (await as_member.delete(f"/api/profiles/{direct_profile}")).status_code == 403
 
 
+async def test_health_says_which_build_it_is(client):
+    """Asked during every deployment, and the honest answer cannot come from an
+    image tag -- `latest` moves, a version does not."""
+    from app.version import __version__
+
+    body = (await client.get("/api/health")).json()
+    assert body["version"] == __version__
+
+
+async def test_the_version_is_written_down_once():
+    """Three files claiming three versions is the failure this guards. The
+    Python package is the source; the others are copies that have to agree."""
+    import json
+    import pathlib
+    import re
+
+    from app.version import __version__
+
+    root = pathlib.Path(__file__).resolve().parents[2]  # noqa: ASYNC240 - reading two small files
+    pyproject = (root / "backend" / "pyproject.toml").read_text()
+    assert re.search(rf'^version = "{re.escape(__version__)}"$', pyproject, re.M), (
+        "backend/pyproject.toml disagrees with app/version.py"
+    )
+
+    package = json.loads((root / "frontend" / "package.json").read_text())
+    assert package["version"] == __version__, "frontend/package.json disagrees"
+
+
 # ---- who may do what ---------------------------------------------------
 
 

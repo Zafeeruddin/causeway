@@ -23,6 +23,7 @@ from app.services.connections import ConnectionService
 from app.services.events import event_bus
 from app.services.gateway import RemoteGateway, RemotePreview
 from app.services.preview import PreviewError, PreviewManager
+from app.version import __version__
 
 log = structlog.get_logger(__name__)
 
@@ -136,6 +137,10 @@ def create_app() -> FastAPI:
         # can actually do is the question being asked.
         body: dict = {
             "status": "ok",
+            # First field on purpose: "which build is on that machine" is the
+            # question this endpoint gets asked most often during a deployment,
+            # and an image tag can be moved while a version cannot.
+            "version": __version__,
             "connect_mode": "inproc" if app.state.netns is not None else "agent",
         }
         body.update(await _network_status(app))
