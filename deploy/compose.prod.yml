@@ -68,7 +68,7 @@ services:
     networks: [control]
 
   api:
-    image: registry.example.com/camtunnel/cam-dashboard-api:${IMAGE_TAG:-latest}
+    image: registry.example.com/causeway/causeway-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -82,14 +82,14 @@ services:
     networks: [control]
 
   web:
-    image: registry.example.com/camtunnel/cam-dashboard-web:${IMAGE_TAG:-latest}
+    image: registry.example.com/causeway/causeway-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on: [api]
     ports: ["${WEB_BIND:-127.0.0.1:3000}:3000"]
     networks: [control]
 
   agent:
-    image: registry.example.com/camtunnel/cam-dashboard-agent:${IMAGE_TAG:-latest}
+    image: registry.example.com/causeway/causeway-agent:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: [.env]
     depends_on:
