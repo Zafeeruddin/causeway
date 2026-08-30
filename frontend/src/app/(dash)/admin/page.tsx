@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago } from "@/lib/format";
-import type { Team, User } from "@/lib/types";
+import type { Me, Team, User } from "@/lib/types";
 import {
   Badge, Banner, Button, Card, CardHeader, Empty, Eyebrow, Field, Input, Modal, Select,
 } from "@/components/ui";
 
 export default function AdminPage() {
+  const [me, setMe] = useState<Me | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState("");
@@ -18,7 +19,8 @@ export default function AdminPage() {
 
   const load = useCallback(async () => {
     try {
-      const [t, u] = await Promise.all([api.teams(), api.users()]);
+      const [who, t, u] = await Promise.all([api.me(), api.teams(), api.users()]);
+      setMe(who);
       setTeams(t);
       setUsers(u);
     } catch (err) {
@@ -36,8 +38,8 @@ export default function AdminPage() {
         <Eyebrow>Admin</Eyebrow>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">Teams and people</h1>
         <p className="mt-1.5 max-w-2xl text-sm text-fg-3">
-          A team owns its cameras, its recordings and its connection profile. Members see
-          the union of their teams and nothing else.
+          A team owns its cameras, its recordings and its connection profiles. Everyone sees
+          the union of their teams and nothing else; what they may do inside them is their role.
         </p>
       </div>
 
@@ -48,9 +50,13 @@ export default function AdminPage() {
           <CardHeader
             title="Teams"
             action={
-              <Button size="sm" onClick={() => setCreatingTeam(true)}>
-                New team
-              </Button>
+              // A team is the boundary every other permission is drawn against,
+              // so only the account that owns the deployment draws one.
+              me?.role === "superadmin" ? (
+                <Button size="sm" onClick={() => setCreatingTeam(true)}>
+                  New team
+                </Button>
+              ) : null
             }
           />
           {teams.length === 0 ? (
@@ -89,7 +95,7 @@ export default function AdminPage() {
                   <p className="truncate text-sm">{user.display_name || user.email}</p>
                   <p className="truncate font-mono text-2xs text-fg-3">{user.email}</p>
                 </div>
-                <Badge tone={user.role === "admin" ? "steel" : "muted"}>{user.role}</Badge>
+                <Badge tone={user.role === "viewer" ? "muted" : "steel"}>{user.role}</Badge>
                 <span className="w-20 text-right text-2xs text-fg-3">
                   {ago(user.last_login_at)}
                 </span>
@@ -109,6 +115,8 @@ export default function AdminPage() {
       />
       <NewUserModal
         open={creatingUser}
+        me={me}
+        teams={teams}
         onClose={() => setCreatingUser(false)}
         onDone={async () => {
           setCreatingUser(false);
@@ -186,20 +194,41 @@ function NewTeamModal({
 }
 
 function NewUserModal({
-  open, onClose, onDone,
-}: { open: boolean; onClose: () => void; onDone: () => void }) {
+  open, me, teams, onClose, onDone,
+}: {
+  open: boolean;
+  me: Me | null;
+  teams: Team[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState("member");
+  const [role, setRole] = useState("viewer");
+  const [teamId, setTeamId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // A superadmin may make any role and place it anywhere. An admin may make
+  // viewers, in their own teams -- the server enforces both, and offering the
+  // rest here would only be a 403 waiting to happen.
+  const superadmin = me?.role === "superadmin";
+
+  useEffect(() => {
+    if (teams[0] && !teamId) setTeamId(teams[0].id);
+  }, [teams, teamId]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      await api.createUser({ email, password, role });
+      await api.createUser({
+        email,
+        password,
+        role,
+        team_ids: teamId ? [teamId] : [],
+      });
       setEmail("");
       setPassword("");
       onDone();
@@ -226,10 +255,33 @@ function NewUserModal({
             required
           />
         </Field>
-        <Field label="Role" hint="Admins see every team and manage accounts.">
-          <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
+        <Field
+          label="Role"
+          hint={
+            superadmin
+              ? "Superadmins own the deployment. Admins own their own teams. Viewers watch cameras."
+              : "You can create viewers: they watch, record and download, and change nothing."
+          }
+        >
+          <Select value={role} onChange={(e) => setRole(e.target.value)} disabled={!superadmin}>
+            <option value="viewer">Viewer</option>
+            {superadmin ? <option value="admin">Admin</option> : null}
+            {superadmin ? <option value="superadmin">Superadmin</option> : null}
+          </Select>
+        </Field>
+        <Field
+          label="Team"
+          hint={
+            superadmin
+              ? "Optional for a superadmin, who sees every team regardless."
+              : "The team this account will be able to see."
+          }
+        >
+          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+            {superadmin ? <option value="">No team yet</option> : null}
+            {teams.map((team) => (
+              <option key={team.id} value={team.id}>{team.name}</option>
+            ))}
           </Select>
         </Field>
         {error ? <Banner tone="bad" title={error} /> : null}
@@ -288,7 +340,9 @@ function MembersModal({
               <p className="truncate text-sm">{user.display_name || user.email}</p>
               <p className="truncate font-mono text-2xs text-fg-3">{user.email}</p>
             </div>
-            {user.role === "admin" ? (
+            {user.role === "superadmin" ? (
+              // Membership is meaningless for an account that already sees all
+              // of it, so offering to add or remove them would be a lie.
               <span className="text-2xs text-fg-3">sees every team</span>
             ) : (
               <div className="flex gap-1.5">

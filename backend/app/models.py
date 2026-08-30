@@ -72,15 +72,20 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(120), default="")
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[Role] = mapped_column(String(16), default=Role.MEMBER, nullable=False)
+    role: Mapped[Role] = mapped_column(String(16), default=Role.VIEWER, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     memberships: Mapped[list[TeamMember]] = relationship(back_populates="user")
 
     @property
-    def is_admin(self) -> bool:
-        return self.role is Role.ADMIN or self.role == Role.ADMIN
+    def is_superadmin(self) -> bool:
+        return Role(self.role) is Role.SUPERADMIN
+
+    @property
+    def may_administer(self) -> bool:
+        """Administers their own teams. Says nothing about which teams those are."""
+        return Role(self.role).may_administer
 
 
 class Team(Base, TimestampMixin):

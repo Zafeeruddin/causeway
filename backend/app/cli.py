@@ -41,10 +41,10 @@ async def create_admin(email: str, password: str | None, name: str) -> None:
                 email=email.lower(),
                 display_name=name or email.split("@")[0],
                 password_hash=hash_password(password),
-                role=Role.ADMIN,
+                role=Role.SUPERADMIN,
             )
         )
-    print(f"admin created: {email}")
+    print(f"superadmin created: {email}")
 
 
 async def create_team(name: str, slug: str, member_email: str | None) -> None:

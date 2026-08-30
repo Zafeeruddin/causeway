@@ -68,7 +68,12 @@ class UserCreate(BaseModel):
     email: str
     display_name: str = ""
     password: str = Field(min_length=10, description="At least 10 characters.")
-    role: Role = Role.MEMBER
+    #: Defaults to the least: an account created without saying what it is for
+    #: should be able to watch, not to administer.
+    role: Role = Role.VIEWER
+    #: Teams to put the new account in. Required of an admin, who may only
+    #: create accounts inside their own teams; optional for a superadmin.
+    team_ids: list[str] = []
 
 
 class UserOut(Model):
@@ -287,6 +292,11 @@ class CameraOut(Model):
     id: str
     team_id: str
     profile_id: str
+    #: How this camera is reached, said in one phrase. Carried here so the
+    #: cameras page never has to read the profiles API to label a row --
+    #: viewers are not allowed there and do not need to be.
+    profile_name: str = ""
+    profile_mode: ReachMode | None = None
     name: str
     location: str = ""
     is_enabled: bool = True

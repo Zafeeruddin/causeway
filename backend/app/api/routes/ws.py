@@ -40,7 +40,7 @@ async def live(socket: WebSocket) -> None:
         if user is None or not user.is_active:
             await socket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Account is inactive.")
             return
-        if user.is_admin:
+        if user.is_superadmin:
             rows = await db.execute(select(TeamMember.team_id).distinct())
         else:
             rows = await db.execute(select(TeamMember.team_id).where(TeamMember.user_id == user_id))

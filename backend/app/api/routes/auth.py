@@ -56,7 +56,7 @@ async def me(
 
 
 async def _me(db: AsyncSession, user: User) -> Me:
-    if user.is_admin:
+    if user.is_superadmin:
         rows = await db.execute(select(Team))
     else:
         rows = await db.execute(select(Team).join(TeamMember).where(TeamMember.user_id == user.id))

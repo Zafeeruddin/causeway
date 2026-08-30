@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import Principal, get_session
+from app.enums import Role
 from app.models import TeamMember, User
 
 COOKIE_NAME = "cam_session"
@@ -75,10 +76,24 @@ async def current_principal(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This account is no longer active.")
 
     rows = await db.execute(select(TeamMember.team_id).where(TeamMember.user_id == user_id))
-    return Principal(user_id=user.id, is_admin=user.is_admin, team_ids=set(rows.scalars().all()))
+    return Principal(user_id=user.id, role=Role(user.role), team_ids=set(rows.scalars().all()))
 
 
 async def require_admin(principal: Principal = Depends(current_principal)) -> Principal:
-    if not principal.is_admin:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "This action needs an admin account.")
+    """Administers *something*. Which team is the route's question, not this one.
+
+    A route that ends here and does not then check the team it is acting on has
+    granted one team's admin authority over another's, which is the failure this
+    split exists to make hard to write by accident.
+    """
+    if not principal.may_administer:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This action needs an administrator account."
+        )
+    return principal
+
+
+async def require_superadmin(principal: Principal = Depends(current_principal)) -> Principal:
+    if not principal.is_superadmin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can do this.")
     return principal

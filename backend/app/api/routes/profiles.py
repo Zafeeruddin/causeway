@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import current_principal
-from app.api.deps import gateway, load_profile
+from app.api.auth import current_principal, require_admin
+from app.api.deps import deny_unless_team_admin, gateway, load_profile
 from app.api.schemas import (
     ConnectResponse,
     GateResultOut,
@@ -25,7 +25,12 @@ from app.security.secrets import secrets_backend
 from app.services.audit import record
 from app.services.gateway import ConnectionGateway
 
-router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+#: The whole router, not route by route. A connection profile is plumbing --
+#: gateways, jump hosts, credentials, a dial that holds a VPN open for a whole
+#: team -- and a viewer has no business reading it, never mind changing it. The
+#: profile *name* a camera belongs to travels on the camera instead, so nothing
+#: a viewer sees has to come from here.
+router = APIRouter(prefix="/api/profiles", tags=["profiles"], dependencies=[Depends(require_admin)])
 
 
 def _out(profile: ConnectionProfile) -> ProfileOut:
@@ -71,8 +76,8 @@ async def create_profile(
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(current_principal),
 ) -> ProfileOut:
-    if not principal.may_see(body.team_id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    # The router proves they administer something; this proves it is this team.
+    deny_unless_team_admin(principal, body.team_id)
 
     secrets = secrets_backend()
     profile = ConnectionProfile(

@@ -33,6 +33,20 @@ def previews(request: Request) -> PreviewGateway:
     return request.app.state.previews
 
 
+def deny_unless_team_admin(principal: Principal, team_id: str | None) -> None:
+    """Refuse anyone who is not an administrator *of this team*.
+
+    Two different refusals, on purpose. Someone who belongs to the team gets 403
+    and a sentence: they know the thing exists, and "you cannot do that" is the
+    useful answer. Someone outside it gets the same 404 everything else gives,
+    because confirming which teams and objects exist is itself a disclosure.
+    """
+    if not principal.may_see(team_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    if not principal.may_administer_team(team_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This needs an administrator of this team.")
+
+
 async def require_team(
     team_id: str,
     principal: Principal = Depends(current_principal),

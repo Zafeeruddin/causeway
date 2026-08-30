@@ -138,7 +138,9 @@ export const api = {
   createTeam: (name: string, slug: string, description = "") =>
     request<Team>("/api/admin/teams", { method: "POST", ...json({ name, slug, description }) }),
   users: () => request<User[]>("/api/admin/users"),
-  createUser: (body: { email: string; password: string; display_name?: string; role?: string }) =>
+  createUser: (body: {
+    email: string; password: string; display_name?: string; role?: string; team_ids?: string[];
+  }) =>
     request<User>("/api/admin/users", { method: "POST", ...json(body) }),
   addMember: (teamId: string, userId: string) =>
     request<void>(`/api/admin/teams/${teamId}/members`, { method: "POST", ...json({ user_id: userId }) }),
