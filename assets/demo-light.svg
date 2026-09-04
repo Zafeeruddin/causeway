@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" width="960" height="430"
+     role="img" aria-label="Causeway walking its eight connection gates, then playing a live preview in light mode">
+  <title>Causeway — connecting and previewing a camera</title>
+  <desc>The eight connection gates run in order before a live camera preview appears.</desc>
+
+  <style>
+    .f { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .step1, .step2, .step3, .step4, .step5,
+    .step6, .step7, .step8, .step9 { animation: 14s linear infinite; }
+    .step1 { animation-name: s1 } .step2 { animation-name: s2 }
+    .step3 { animation-name: s3 } .step4 { animation-name: s4 }
+    .step5 { animation-name: s5 } .step6 { animation-name: s6 }
+    .step7 { animation-name: s7 } .step8 { animation-name: s8 }
+    .step9 { animation-name: s9 }
+    .livedot { animation: blink 1.6s ease-in-out infinite; }
+    @keyframes s1 { 0%,2% { opacity: 1 } 3%,8% { opacity: 0 } 10%,100% { opacity: 1 } }
+    @keyframes s2 { 0%,2% { opacity: 1 } 3%,12% { opacity: 0 } 14%,100% { opacity: 1 } }
+    @keyframes s3 { 0%,2% { opacity: 1 } 3%,16% { opacity: 0 } 18%,100% { opacity: 1 } }
+    @keyframes s4 { 0%,2% { opacity: 1 } 3%,20% { opacity: 0 } 22%,100% { opacity: 1 } }
+    @keyframes s5 { 0%,2% { opacity: 1 } 3%,24% { opacity: 0 } 26%,100% { opacity: 1 } }
+    @keyframes s6 { 0%,2% { opacity: 1 } 3%,28% { opacity: 0 } 30%,100% { opacity: 1 } }
+    @keyframes s7 { 0%,2% { opacity: 1 } 3%,32% { opacity: 0 } 34%,100% { opacity: 1 } }
+    @keyframes s8 { 0%,2% { opacity: 1 } 3%,36% { opacity: 0 } 38%,100% { opacity: 1 } }
+    @keyframes s9 { 0%,2% { opacity: 1 } 3%,40% { opacity: 0 } 42%,100% { opacity: 1 } }
+    @keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: .25 } }
+  </style>
+
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#18384a" flood-opacity=".10"/>
+    </filter>
+    <clipPath id="screen"><rect width="386" height="218" rx="10"/></clipPath>
+  </defs>
+
+  <rect width="960" height="430" rx="14" fill="#f7fafc"/>
+  <rect x="0.5" y="0.5" width="959" height="429" rx="14" fill="none" stroke="#d7e2e9"/>
+
+  <g class="f">
+    <text x="28" y="36" fill="#1879a8" font-size="11" font-weight="700" letter-spacing="2.4">CAUSEWAY</text>
+    <text x="28" y="58" fill="#172b36" font-size="17" font-weight="600">Gate 1 – North</text>
+    <text x="28" y="78" fill="#6b7f8a" font-size="12">Acme Logistics · VPN + jump host · 10.20.30.42</text>
+  </g>
+  <g class="video step9">
+    <circle cx="836" cy="34" r="4" fill="#208754" class="livedot"/>
+    <text x="848" y="39" class="f" fill="#208754" font-size="12" font-weight="600">live</text>
+  </g>
+  <line x1="28" y1="96" x2="932" y2="96" stroke="#d7e2e9"/>
+
+  <g transform="translate(28 118)">
+    <g class="row step1"><text class="m" x="0" y="0" fill="#91a2ac" font-size="11">01</text><text class="f" x="34" y="0" fill="#263b46" font-size="13">VPN dial</text></g>
+    <g class="pill step1"><rect x="392" y="-12" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="1" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step2"><text class="m" x="0" y="30" fill="#91a2ac" font-size="11">02</text><text class="f" x="34" y="30" fill="#263b46" font-size="13">Certificate trust</text></g>
+    <g class="pill step2"><rect x="392" y="18" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="31" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step3"><text class="m" x="0" y="60" fill="#91a2ac" font-size="11">03</text><text class="f" x="34" y="60" fill="#6b7f8a" font-size="13">Whitelist check</text></g>
+    <g class="pill step3"><rect x="392" y="48" width="72" height="18" rx="9" fill="#e9eff3"/><text class="m" x="404" y="61" fill="#667c87" font-size="10">skipped</text></g>
+    <g class="row step4"><text class="m" x="0" y="90" fill="#91a2ac" font-size="11">04</text><text class="f" x="34" y="90" fill="#263b46" font-size="13">Route to the jump host</text></g>
+    <g class="pill step4"><rect x="392" y="78" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="91" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step5"><text class="m" x="0" y="120" fill="#91a2ac" font-size="11">05</text><text class="f" x="34" y="120" fill="#263b46" font-size="13">SSH authentication</text></g>
+    <g class="pill step5"><rect x="392" y="108" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="121" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step6"><text class="m" x="0" y="150" fill="#91a2ac" font-size="11">06</text><text class="f" x="34" y="150" fill="#263b46" font-size="13">Port forward</text><text class="m" x="170" y="150" fill="#7c909b" font-size="11">127.0.0.1:20000</text></g>
+    <g class="pill step6"><rect x="392" y="138" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="151" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step7"><text class="m" x="0" y="180" fill="#91a2ac" font-size="11">07</text><text class="f" x="34" y="180" fill="#263b46" font-size="13">Camera reachable</text></g>
+    <g class="pill step7"><rect x="392" y="168" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="181" fill="#207447" font-size="10">passed</text></g>
+    <g class="row step8"><text class="m" x="0" y="210" fill="#91a2ac" font-size="11">08</text><text class="f" x="34" y="210" fill="#263b46" font-size="13">Stream handshake</text><text class="m" x="170" y="210" fill="#7c909b" font-size="11">hevc 1920×1080 @ 15fps</text></g>
+    <g class="pill step8"><rect x="392" y="198" width="66" height="18" rx="9" fill="#dff4e8"/><text class="m" x="404" y="211" fill="#207447" font-size="10">passed</text></g>
+  </g>
+
+  <g class="video step9" transform="translate(546 112)" filter="url(#shadow)">
+    <rect width="386" height="218" rx="10" fill="#0b1419" stroke="#c7d5dd"/>
+    <g clip-path="url(#screen)">
+      <rect width="386" height="130" fill="#17262e"/>
+      <rect y="130" width="386" height="88" fill="#1e3039"/>
+      <path d="M0 150 L150 130 L236 130 L386 150 L386 218 L0 218 Z" fill="#132229"/>
+      <g stroke="#344b57" stroke-width="2"><path d="M40 130 V72 M78 130 V72 M116 130 V72 M154 130 V78"/><path d="M28 74 H166"/></g>
+      <rect x="196" y="60" width="8" height="70" fill="#344b57"/><rect x="196" y="54" width="52" height="10" rx="3" fill="#435d69"/><circle cx="243" cy="59" r="3.5" fill="#56bd7d"/>
+      <g stroke="#2a404b" stroke-width="3" stroke-dasharray="14 12"><path d="M0 186 H386"/></g>
+      <ellipse cx="300" cy="120" rx="46" ry="10" fill="#18282f"/>
+    </g>
+    <g class="m" font-size="10"><rect x="10" y="10" width="52" height="17" rx="8" fill="#0b1419" opacity=".82"/><text x="20" y="22" fill="#70c5e8">rtsp</text><text x="298" y="208" fill="#8ca0aa">h264 · nvenc</text></g>
+  </g>
+
+  <g class="video step9 f" transform="translate(546 348)">
+    <text x="0" y="0" fill="#607681" font-size="12">H.265 re-encoded on the card. Two viewers, one camera session.</text>
+    <text x="0" y="20" fill="#879aa4" font-size="11">A dropped hop names itself — nothing here ever says “connection error”.</text>
+  </g>
+</svg>

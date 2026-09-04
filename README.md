@@ -16,7 +16,7 @@ Watch them live, record them, and know which hop failed when one does.
 </div>
 
 <div align="center">
-  <img src="assets/demo.svg" alt="The eight gates running in order, then the camera playing live" width="820">
+  <img src="assets/demo-light.svg" alt="The eight gates running in order, then the camera playing live" width="820">
 </div>
 
 ---
