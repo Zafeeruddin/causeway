@@ -408,6 +408,48 @@ async def test_cameras_are_scoped_to_your_teams(client, seeded, as_member, direc
         "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
     )
     assert (await client.get("/api/cameras")).json() == []
+    assert (await client.get("/api/cameras/page")).json()["total"] == 0
+
+
+async def test_cameras_can_be_searched_and_paginated(as_member, seeded, direct_profile):
+    cameras = [
+        ("Zulu gate", "CAM-003", "South yard", "10.20.30.53"),
+        ("Alpha lobby", "CAM-001", "Reception", "10.20.30.51"),
+        ("Bravo dock", "CAM-002", "Loading bay", "10.20.30.52"),
+    ]
+    for name, ref, location, host in cameras:
+        response = await as_member.post(
+            "/api/cameras",
+            json={
+                "team_id": seeded["acme"],
+                "profile_id": direct_profile,
+                "name": name,
+                "ref": ref,
+                "location": location,
+                "sources": [{"kind": "rtsp", "url": f"rtsp://{host}:554/s1"}],
+            },
+        )
+        assert response.status_code == 201
+
+    first = (await as_member.get("/api/cameras/page", params={"page_size": 2})).json()
+    assert first["total"] == 3
+    assert first["pages"] == 2
+    assert first["page"] == 1
+    assert [camera["name"] for camera in first["items"]] == ["Alpha lobby", "Bravo dock"]
+
+    second = (
+        await as_member.get("/api/cameras/page", params={"page": 2, "page_size": 2})
+    ).json()
+    assert [camera["name"] for camera in second["items"]] == ["Zulu gate"]
+
+    by_address = (
+        await as_member.get("/api/cameras/page", params={"q": "10.20.30.52"})
+    ).json()
+    assert by_address["total"] == 1
+    assert by_address["items"][0]["ref"] == "CAM-002"
+
+    literal_wildcard = (await as_member.get("/api/cameras/page", params={"q": "%"})).json()
+    assert literal_wildcard["total"] == 0
 
 
 async def test_a_camera_cannot_borrow_another_teams_profile(client, seeded, direct_profile):

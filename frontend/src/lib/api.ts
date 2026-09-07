@@ -7,7 +7,7 @@
  */
 
 import type {
-  Admission, Camera, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
+  Admission, Camera, CameraPage, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
   Preview, Profile, Recording, ReachMode, ResetLink, SourceKind, SshAuth, StorageUsage, Team,
   User, VpnKind,
 } from "./types";
@@ -104,6 +104,14 @@ export const api = {
 
   // cameras
   cameras: () => request<Camera[]>("/api/cameras"),
+  cameraPage: (query: string, page: number, pageSize: number) => {
+    const params = new URLSearchParams({
+      q: query,
+      page: String(page),
+      page_size: String(pageSize),
+    });
+    return request<CameraPage>(`/api/cameras/page?${params}`);
+  },
   createCamera: (body: CameraInput) =>
     request<Camera>("/api/cameras", { method: "POST", ...json(body) }),
   deleteCamera: (id: string) => request<void>(`/api/cameras/${id}`, { method: "DELETE" }),

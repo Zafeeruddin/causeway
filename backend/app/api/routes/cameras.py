@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,7 @@ from app.api.deps import NOT_FOUND, deny_unless_team_admin, gateway, load_camera
 from app.api.schemas import (
     CameraCreate,
     CameraOut,
+    CameraPageOut,
     GateResultOut,
     ImportIssueOut,
     ImportPreview,
@@ -55,6 +56,58 @@ async def list_cameras(
         .order_by(Camera.name)
     )
     return [_camera_out(c) for c in rows.scalars().all()]
+
+
+@router.get("/page", response_model=CameraPageOut)
+async def page_cameras(
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> CameraPageOut:
+    """A bounded camera list for estates too large to render in one page."""
+    stmt = scoped_select(Camera, principal)
+    term = q.strip()
+    if term:
+        pattern = f"%{_like_term(term)}%"
+        stmt = stmt.where(
+            or_(
+                Camera.name.ilike(pattern, escape="\\"),
+                Camera.ref.ilike(pattern, escape="\\"),
+                Camera.location.ilike(pattern, escape="\\"),
+                Camera.profile.has(ConnectionProfile.name.ilike(pattern, escape="\\")),
+                Camera.sources.any(
+                    or_(
+                        CameraSource.host.ilike(pattern, escape="\\"),
+                        CameraSource.url.ilike(pattern, escape="\\"),
+                    )
+                ),
+            )
+        )
+
+    count = await db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    total = int(count or 0)
+    pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(page, pages)
+    rows = await db.execute(
+        stmt.options(selectinload(Camera.sources), selectinload(Camera.profile))
+        .order_by(func.lower(Camera.name), Camera.id)
+        .offset((current_page - 1) * page_size)
+        .limit(page_size)
+    )
+    return CameraPageOut(
+        items=[_camera_out(camera) for camera in rows.scalars().all()],
+        total=total,
+        page=current_page,
+        page_size=page_size,
+        pages=pages,
+    )
+
+
+def _like_term(value: str) -> str:
+    """Make user text literal inside a LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _camera_out(camera: Camera) -> CameraOut:

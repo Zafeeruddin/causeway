@@ -403,6 +403,14 @@ class CameraOut(Model):
     sources: list[SourceOut] = []
 
 
+class CameraPageOut(BaseModel):
+    items: list[CameraOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
 class ImportRequest(BaseModel):
     team_id: str
     profile_id: str
