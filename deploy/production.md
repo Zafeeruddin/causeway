@@ -11,10 +11,11 @@ knowing before you start:
   network namespace per connection profile, which is a mount, which needs
   `SYS_ADMIN` *and* an AppArmor exemption on Ubuntu. See the comment on the
   `agent` service in `docker-compose.yml` for why all three are required.
-- **WebRTC does not go through nginx.** Live preview negotiates over HTTP (which
-  nginx proxies) and then carries video over UDP directly to MediaMTX on port
-  8189. A reverse proxy in front of the video port does not help and will not
-  work. Plan the firewall accordingly.
+- **Direct WebRTC video does not go through nginx.** Live preview negotiates
+  over HTTP and prefers UDP directly to MediaMTX on port 8189. If that path is
+  blocked by mobile CGNAT or a corporate firewall, the player automatically
+  switches to low-latency HLS through the existing HTTPS port 443. Open 8189
+  when possible for the lowest latency; it is no longer required for access.
 
 ---
 
@@ -119,15 +120,15 @@ upload. 20 GB is comfortable at this scale.
   `Couldn't set tty to PPP discipline`, which reads like a permissions problem
   and is not one. The app now detects this: `/api/health` reports
   `ppp_available`, the agent warns at startup, and gate 1 names the module.
-- Ports **80** and **443** open to the internet (nginx), and **8189/udp** open
-  to wherever your users are (WebRTC media). Nothing else needs to be public.
+- Ports **80** and **443** open to the internet (nginx). Open **8189/udp** to
+  wherever your users are when possible for direct low-latency WebRTC. Nothing
+  else needs to be public.
 
-  8189/udp is the one that gets forgotten, and it fails in the most misleading
-  way available: the dashboard loads, the camera tests green, the stream
-  negotiates, and then no video ever arrives. Signalling goes through nginx on
-  443; the video does not. If a router is involved, forward **UDP** 8189 and
-  check that it hairpins — many routers forward from outside but will not send a
-  LAN client back in through the public address.
+  When 8189/udp is blocked, the dashboard marks the stream `live · compatible`
+  after switching it to HTTPS. If a router is involved and direct WebRTC is
+  desired, forward **UDP** 8189 and check that it hairpins — many routers
+  forward from outside but will not send a LAN client back through the public
+  address.
 - A DNS `A` record for your domain pointing at the host.
 - Network reachability from the host to the VPN gateway and to the storage
   gateway. Neither goes through the tunnel.
@@ -243,8 +244,8 @@ server {
         proxy_read_timeout 3600s;
     }
 
-    # WHEP: WebRTC *signalling* only. The video itself does not come through
-    # here -- see the note at the top of this file.
+    # WHEP signalling. Direct media uses UDP 8189; compatible media is proxied
+    # internally by the web service at /hls/ over the same HTTPS origin.
     location /rtc/ {
         proxy_pass http://127.0.0.1:8889/;
         proxy_http_version 1.1;
@@ -264,13 +265,14 @@ sudo ln -s /etc/nginx/sites-available/cam-dashboard /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-### The one that will catch you
+### Direct-preview addressing
 
 `PREVIEW_HOST` must be the address **browsers** dial, not the container's. MediaMTX
 offers the browser whatever addresses it can see, which inside compose is a
 172.28.x.x bridge address no machine outside can reach. Get this wrong and the
-WebRTC session negotiates successfully and then video never starts, with nothing
-logged anywhere. Set it, and open **8189/udp** to your users.
+WebRTC session negotiates successfully and then the direct video never starts.
+Set it and open **8189/udp** to users for the lowest latency. When either is not
+possible, the browser automatically uses the HTTPS compatibility path.
 
 ---
 
@@ -288,9 +290,54 @@ Three fields decide whether anything will work:
 | `netns_available` | namespaces can be created; false means no VPN profile can dial |
 | `ppp_available` | the PPP line discipline is loaded; false means pppd VPNs authenticate and then fail |
 
-Then preview a camera **from a different device** — the only test that exercises
-`PREVIEW_HOST` and the media port. Doing it from the server proves nothing,
-because loopback always works.
+Then preview a camera **from a different device**. A `live` badge confirms the
+direct path; `live · compatible` confirms the HTTPS fallback. Doing it only from
+the server proves nothing, because loopback always works.
+
+## 5a. If this instance faces the internet
+
+Three settings decide whether a public deployment is safe, and two of them are
+easy to leave at a default that quietly disables the protection.
+
+**`TRUSTED_PROXY_HOPS=1`.** Sign-in limits are keyed by caller address. Behind
+nginx, at the default of `0`, every request appears to come from the proxy, so
+all of your users share one bucket and one person working through their own
+password locks out everybody else. Set it to the number of proxies you actually
+run — it is a count and not a boolean because `X-Forwarded-For` is written by
+the client too, and reading it blindly gives an attacker an unlimited supply of
+identities, which is the same as having no limit at all.
+
+**`PUBLIC_BASE_URL=https://cams.example.com`.** Password reset links are built
+from the incoming request when this is empty, and behind a proxy the request's
+idea of itself is whatever `Host` says. A link built from a spoofed `Host`
+carries somebody's reset token to somebody else's server.
+
+**A demo login must be a `demo` account, not a viewer.** A viewer can record and
+can change its own password, so a published viewer login is a login the first
+visitor takes off you. A demo account watches and writes nothing at all:
+
+```bash
+docker compose exec api cam create-user demo@example.com \
+    --role demo --team the-team-slug --name "Demo"
+```
+
+Give it a team — a demo account with no team signs in successfully to an empty
+dashboard, which reads as a broken deployment rather than a missing membership.
+
+Getting somebody back into an account, in order of what the deployment has:
+
+```bash
+# An administrator, from the Admin page: press Reset next to the person, and
+# hand over the link. Works with no mail configured. Issuing it changes nothing,
+# so their current password keeps working until they use it.
+
+# From the machine, when nobody can get in at all:
+docker compose exec api cam reset-link you@example.com
+docker compose exec api cam set-password you@example.com   # last resort
+```
+
+Set `SMTP_HOST` and `SMTP_FROM` and the self-service "forgotten your password"
+form starts working as well. There is no second switch.
 
 ## 6. After it is up
 

@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { useLive } from "@/lib/useLive";
-import { administers, type Me } from "@/lib/types";
+import { administers, writes, type Me } from "@/lib/types";
 import { VERSION } from "@/lib/version";
 import { Button, Dot, cx } from "@/components/ui";
 
@@ -62,6 +62,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const nav = !administers(me.role)
     ? VIEWER_NAV
     : [...NAV, { href: "/admin", label: "Admin" }];
+  const mayWrite = me.may_write && writes(me.role);
 
   return (
     <div className="min-h-screen">
@@ -69,7 +70,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-3">
           <Link href="/" className="shrink-0">
             <span className="font-mono text-2xs uppercase tracking-[0.16em] text-steel">
-              Camera tunnel
+              Causeway
             </span>
             <span className="block text-sm font-semibold leading-tight">Control plane</span>
           </Link>
@@ -109,7 +110,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             >
               v{VERSION}
             </span>
-            <span className="hidden text-xs text-fg-3 sm:block">{me.email}</span>
+            {/* A read-only account should know it is one before it presses
+                something, not after the server refuses. */}
+            {mayWrite ? (
+              <Link
+                href="/account"
+                className="hidden text-xs text-fg-3 transition hover:text-fg sm:block"
+                title="Your account"
+              >
+                {me.email}
+              </Link>
+            ) : (
+              <span
+                className="hidden items-center gap-2 text-xs text-fg-3 sm:flex"
+                title="This account can watch cameras and change nothing"
+              >
+                {me.email}
+                <span className="rounded border border-line px-1.5 py-0.5 font-mono text-2xs uppercase tracking-wide text-steel">
+                  read only
+                </span>
+              </span>
+            )}
             <Button size="sm" variant="quiet" onClick={signOut}>
               Sign out
             </Button>

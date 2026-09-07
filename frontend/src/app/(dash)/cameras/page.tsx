@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, modeLabel } from "@/lib/format";
-import { administers, type Camera, type Gate, type ImportResult, type Me, type Profile, type Source } from "@/lib/types";
+import { administers, writes, type Camera, type Gate, type ImportResult, type Me, type Profile, type Source } from "@/lib/types";
 import { GateLadder } from "@/components/GateLadder";
 import { LivePreview } from "@/components/LivePreview";
 import {
@@ -45,6 +45,9 @@ export default function CamerasPage() {
   }, [load]);
 
   const mayManage = me ? administers(me.role) : false;
+  // Watching is the whole point of a demo account; recording writes to the
+  // storage budget, so it is not.
+  const mayRecord = me ? me.may_write && writes(me.role) : false;
 
   async function test(camera: Camera) {
     setTesting(camera.id);
@@ -79,12 +82,14 @@ export default function CamerasPage() {
           </h1>
         </div>
         <div className="flex gap-2">
-          <Button
-            disabled={selection.size === 0}
-            onClick={() => setRecording(true)}
-          >
-            Record {selection.size ? `${selection.size} selected` : ""}
-          </Button>
+          {mayRecord ? (
+            <Button
+              disabled={selection.size === 0}
+              onClick={() => setRecording(true)}
+            >
+              Record {selection.size ? `${selection.size} selected` : ""}
+            </Button>
+          ) : null}
           {mayManage ? (
             <Button variant="primary" onClick={() => setAdding(true)}>
               Add cameras

@@ -8,7 +8,8 @@
 
 import type {
   Admission, Camera, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
-  Preview, Profile, Recording, ReachMode, SourceKind, SshAuth, StorageUsage, Team, User, VpnKind,
+  Preview, Profile, Recording, ReachMode, ResetLink, SourceKind, SshAuth, StorageUsage, Team,
+  User, VpnKind,
 } from "./types";
 
 export class ApiError extends Error {
@@ -76,6 +77,17 @@ export const api = {
     request<Me>("/api/auth/login", { method: "POST", ...json({ email, password }) }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   me: () => request<Me>("/api/auth/me"),
+  /** Always accepted, whatever the address -- the server will not say whether
+   *  an account exists, so neither does this. */
+  forgotPassword: (email: string) =>
+    request<{ detail: string }>("/api/auth/forgot-password", {
+      method: "POST",
+      ...json({ email }),
+    }),
+  resetPassword: (token: string, password: string) =>
+    request<void>("/api/auth/reset-password", { method: "POST", ...json({ token, password }) }),
+  changePassword: (current_password: string, password: string) =>
+    request<void>("/api/auth/password", { method: "POST", ...json({ current_password, password }) }),
 
   // profiles
   profiles: () => request<Profile[]>("/api/profiles"),
@@ -150,4 +162,8 @@ export const api = {
     request<void>(`/api/admin/teams/${teamId}/members`, { method: "POST", ...json({ user_id: userId }) }),
   removeMember: (teamId: string, userId: string) =>
     request<void>(`/api/admin/teams/${teamId}/members/${userId}`, { method: "DELETE" }),
+  /** A one-time link to hand over. Does not change the password by itself, so
+   *  somebody who has lost theirs keeps working until they redeem it. */
+  resetLink: (userId: string) =>
+    request<ResetLink>(`/api/admin/users/${userId}/reset-link`, { method: "POST" }),
 };

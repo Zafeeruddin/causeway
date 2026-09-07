@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Causeway walks the chain to cameras behind a VPN and a jump host, names the hop that failed, and puts the picture in a browser.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Causeway">
+<meta property="og:description" content="A road to cameras you cannot otherwise reach.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cg fill='none' stroke='%2379b7d8' stroke-linecap='round'%3E%3Cpath d='M2 30h60' stroke-width='6'/%3E%3Cpath d='M12 30v10a8 8 0 0 0 16 0V30' stroke-width='4'/%3E%3Cpath d='M36 30v10a8 8 0 0 0 16 0V30' stroke-width='4'/%3E%3C/g%3E%3Ccircle cx='52' cy='14' r='5' fill='%2379b7d8'/%3E%3C/svg%3E">
+<title>Causeway</title>
+<title>Causeway</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=JetBrains+Mono:wght@400;500&family=Public+Sans:wght@400;500&display=swap">
+
+<style>
+  /* Causeway ships dark: the control plane sets color-scheme: dark and the
+     product's palette is built for it. This page commits to the same world
+     rather than inventing a light one, so every colour is painted explicitly
+     and nothing is borrowed from the host. */
+  :root {
+    color-scheme: dark;
+
+    --deep:     #080d11;
+    --ink:      #0d1318;
+    --ink-2:    #161e24;
+    --ink-3:    #1b262e;
+
+    --fg:       #dfe8ee;
+    --fg-2:     #a9bcc8;
+    --fg-3:     #7d919e;
+
+    --steel:      #79b7d8;
+    --steel-deep: #1f5673;
+    --steel-wash: #12303f;
+
+    --ok:   #5fbd8b;
+    --warn: #d8a44e;
+    --bad:  #e0705f;
+
+    --line:      rgba(121, 183, 216, 0.14);
+    --line-soft: rgba(121, 183, 216, 0.07);
+
+    --sans: "Public Sans", system-ui, -apple-system, sans-serif;
+    --display: "Archivo", "Public Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+    --measure: 62ch;
+    --gutter: 6.5rem;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--deep);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection { background: var(--steel-wash); color: var(--fg); }
+  :focus-visible { outline: 2px solid var(--steel); outline-offset: 3px; border-radius: 2px; }
+
+  a { color: var(--steel); text-decoration-color: var(--steel-deep); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--steel); }
+
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- the survey grid ------------------------------------------------ */
+
+  .sheet {
+    max-width: 68rem;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    gap: 0 2rem;
+  }
+
+  .mark {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    line-height: 1.5;
+    padding-top: 0.5rem;
+  }
+
+  section { border-top: 1px solid var(--line-soft); padding: 4.5rem 0; }
+  section:first-of-type { border-top: 0; }
+
+  h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h2 {
+    font-size: clamp(1.5rem, 3.2vw, 2rem);
+    line-height: 1.15;
+    margin-bottom: 1.25rem;
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin-bottom: 0.4rem;
+  }
+
+  p { margin: 0 0 1.1rem; max-width: var(--measure); color: var(--fg-2); }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--fg); font-weight: 500; }
+
+  /* ---- masthead ------------------------------------------------------- */
+
+  .masthead {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1.5rem 0 0;
+  }
+
+  .arches { flex: none; }
+
+  .wordmark {
+    font-family: var(--display);
+    font-weight: 800;
+    font-size: 0.9375rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .masthead .spacer { flex: 1; }
+
+  .masthead-links {
+    display: flex;
+    gap: 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+  }
+  .masthead-links a { color: var(--fg-3); text-decoration: none; }
+  .masthead-links a:hover { color: var(--fg); }
+
+  /* ---- hero ----------------------------------------------------------- */
+
+  .hero { padding: 5rem 0 3rem; }
+
+  .hero h1 {
+    font-size: clamp(2.4rem, 6.4vw, 4.25rem);
+    line-height: 1.02;
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    max-width: 18ch;
+  }
+
+  .hero .lede {
+    font-size: 1.0625rem;
+    margin-top: 1.75rem;
+    max-width: 54ch;
+  }
+
+  .chain {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    letter-spacing: 0.02em;
+    margin-top: 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.6rem;
+    align-items: center;
+    max-width: none;
+  }
+  .chain .arrow { color: var(--steel-deep); }
+
+  /* ---- the ladder ----------------------------------------------------- */
+
+  .ladder-frame {
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .ladder-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.85rem 1.15rem;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+  }
+  .ladder-head b { color: var(--fg-2); font-weight: 500; }
+  .ladder-head .grow { flex: 1; }
+
+  .replay {
+    font: inherit;
+    color: var(--fg-3);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 0.15rem 0.6rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .replay:hover { color: var(--steel); border-color: var(--steel-deep); }
+
+  .gate {
+    display: grid;
+    grid-template-columns: 3.4rem 1.25rem minmax(0, 1fr) auto;
+    gap: 0.9rem;
+    align-items: baseline;
+    padding: 0.6rem 1.15rem;
+    border-top: 1px solid var(--line-soft);
+    font-size: 0.8125rem;
+    opacity: 0.22;
+    transition: opacity 0.35s ease;
+  }
+  .gate:first-child { border-top: 0; }
+  .gate.shown { opacity: 1; }
+
+  .gate .n {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    color: var(--fg-3);
+    letter-spacing: 0.06em;
+  }
+
+  .gate .glyph {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    line-height: 1;
+    color: var(--fg-3);
+  }
+
+  .gate .title { color: var(--fg); }
+
+  .gate .msg {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    margin-top: 0.15rem;
+    overflow-wrap: anywhere;
+  }
+
+  .gate .ms {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .gate[data-status="passed"]  .glyph { color: var(--ok); }
+  .gate[data-status="skipped"] .glyph { color: var(--fg-3); }
+  .gate[data-status="skipped"] .title { color: var(--fg-2); }
+  .gate[data-status="failed"]  .glyph { color: var(--bad); }
+  .gate[data-status="failed"]  .msg   { color: var(--bad); }
+  .gate[data-status="pending"] .title { color: var(--fg-3); }
+
+  .ladder-foot {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1.15rem;
+    border-top: 1px solid var(--line);
+    background: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    min-height: 3rem;
+  }
+  .ladder-foot .verdict { color: var(--ok); }
+  .ladder-foot.is-failed .verdict { color: var(--bad); }
+
+  .scenarios {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    align-items: center;
+  }
+  .scenarios .label {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    margin-right: 0.35rem;
+  }
+  .scenarios button {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 0.3rem 0.75rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .scenarios button:hover { color: var(--fg-2); border-color: var(--steel-deep); }
+  .scenarios button[aria-pressed="true"] {
+    color: var(--steel);
+    border-color: var(--steel-deep);
+    background: var(--steel-wash);
+  }
+
+  /* ---- feature list --------------------------------------------------- */
+
+  .features { display: grid; gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
+  @media (min-width: 42rem) { .features { grid-template-columns: 1fr 1fr; } }
+
+  .feature { background: var(--deep); padding: 1.5rem; }
+  .feature .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--steel);
+    display: block;
+    margin-bottom: 0.6rem;
+  }
+  .feature p { font-size: 0.9375rem; margin: 0; }
+
+  /* ---- ideas ---------------------------------------------------------- */
+
+  .idea { border-left: 2px solid var(--steel-deep); padding-left: 1.25rem; margin-bottom: 2.25rem; }
+  .idea:last-child { margin-bottom: 0; }
+  .idea h3 { color: var(--fg); }
+  .idea p { font-size: 0.9375rem; }
+
+  /* ---- tables --------------------------------------------------------- */
+
+  .scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: 0.875rem;
+  }
+  th, td { text-align: left; padding: 0.7rem 1rem 0.7rem 0; border-bottom: 1px solid var(--line-soft); }
+  thead th {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    font-weight: 400;
+    border-bottom-color: var(--line);
+  }
+  td { color: var(--fg-2); }
+  td:first-child { color: var(--fg); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--fg-2); }
+  .none { color: var(--fg-3); }
+
+  /* ---- close ---------------------------------------------------------- */
+
+  .close {
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2.5rem;
+  }
+  .close h2 { margin-bottom: 0.9rem; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+
+  .btn {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    letter-spacing: 0.02em;
+    padding: 0.6rem 1.15rem;
+    border-radius: 2px;
+    text-decoration: none;
+    border: 1px solid var(--steel-deep);
+    color: var(--steel);
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn:hover { background: var(--steel-wash); }
+  .btn.solid { background: var(--steel); color: var(--deep); border-color: var(--steel); font-weight: 500; }
+  .btn.solid:hover { background: var(--fg); border-color: var(--fg); }
+
+  footer {
+    border-top: 1px solid var(--line-soft);
+    padding: 2rem 0 3.5rem;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    align-items: baseline;
+  }
+  footer .grow { flex: 1; }
+
+  @media (max-width: 48rem) {
+    :root { --gutter: 0px; }
+    .row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .mark { padding-top: 0; margin-bottom: 0.85rem; }
+    .gate { grid-template-columns: 3.4rem 1.25rem minmax(0, 1fr); padding: 0.6rem 0.85rem; gap: 0.6rem; }
+    .gate .ms { display: none; }
+    .close { padding: 1.75rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .gate { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="masthead">
+    <svg class="arches" width="26" height="26" viewBox="0 0 64 64" role="img" aria-label="Causeway">
+      <g fill="none" stroke="#79b7d8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 30h60" stroke-width="4.5"/>
+        <path d="M12 30v10a8 8 0 0 0 16 0V30" stroke-width="3" opacity=".7"/>
+        <path d="M36 30v10a8 8 0 0 0 16 0V30" stroke-width="3" opacity=".7"/>
+        <path d="M2 52q6-3 12 0t12 0 12 0 12 0 12 0" stroke-width="2.5" opacity=".45"/>
+      </g>
+      <circle cx="52" cy="14" r="4.5" fill="#79b7d8"/>
+    </svg>
+    <span class="wordmark">Causeway</span>
+    <span class="spacer"></span>
+    <nav class="masthead-links">
+      <a href="#cost">Cost</a>
+      <a href="#contact">Talk to us</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>A road to cameras you cannot otherwise reach.</h1>
+    <p class="lede">
+      Cameras on a customer's private network sit behind a VPN, then behind a jump host,
+      then on an address only that jump host can route to. Causeway walks that chain,
+      names the hop that failed when one does, and puts the picture in a browser.
+    </p>
+    <div class="chain">
+      <span>VPN dial</span><span class="arrow">→</span>
+      <span>certificate trust</span><span class="arrow">→</span>
+      <span>whitelist</span><span class="arrow">→</span>
+      <span>route to jump host</span><span class="arrow">→</span>
+      <span>SSH auth</span><span class="arrow">→</span>
+      <span>port forward</span><span class="arrow">→</span>
+      <span>camera reachable</span><span class="arrow">→</span>
+      <span>stream handshake</span>
+    </div>
+  </div>
+
+  <section id="ladder">
+    <div class="row">
+      <div class="mark">The ladder</div>
+      <div>
+        <h2>Eight gates, walked in order, each reporting for itself.</h2>
+        <p>
+          The usual answer to a camera that will not play is &ldquo;it isn't working&rdquo;, with no
+          indication of which of five hops broke. Causeway makes the chain a first-class thing.
+          A hop a profile does not use is shown as <strong>skipped</strong>, not hidden, so
+          <em>not needed</em> never looks like <em>never checked</em>.
+        </p>
+
+        <div class="ladder-frame" id="ladder-frame">
+          <div class="ladder-head">
+            <b id="ladder-name">Riyadh · MOFA</b>
+            <span>fortinet + jump</span>
+            <span class="grow"></span>
+            <button class="replay" id="replay" type="button">replay</button>
+          </div>
+          <div id="gates"></div>
+          <div class="ladder-foot" id="foot">
+            <span id="verdict" class="verdict"></span>
+          </div>
+        </div>
+
+        <div class="scenarios" id="scenarios">
+          <span class="label">Watch it</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="does">
+    <div class="row">
+      <div class="mark">What it does</div>
+      <div>
+        <h2>Four jobs, and the third one is the hard one.</h2>
+        <div class="features">
+          <div class="feature">
+            <span class="eyebrow">Connects</span>
+            <p>
+              Fortinet, GlobalProtect, WireGuard, or nothing at all when the cameras are already
+              reachable. One network namespace per profile, so three teams hold three VPNs on one
+              host and a dropped tunnel takes down its own traffic and nobody else's.
+            </p>
+          </div>
+          <div class="feature">
+            <span class="eyebrow">Watches</span>
+            <p>
+              Live preview in the browser over WebRTC, about five seconds from click to picture.
+              Two people watching one camera cost one camera session, because cameras cap those
+              hard and the second viewer is the one who gets refused.
+            </p>
+          </div>
+          <div class="feature">
+            <span class="eyebrow">Records</span>
+            <p>
+              The raw feed and the inferred feed at once, into sealed segments that survive a
+              mid-write outage, uploaded to S3-compatible storage. A recording that lost thirty
+              seconds says so, and says why, in a sidecar that travels with the file.
+            </p>
+          </div>
+          <div class="feature">
+            <span class="eyebrow">Compares</span>
+            <p>
+              Both feeds side by side on one transport, aligned on wall-clock time, so a gap in
+              one does not silently shift the other and make two synchronised cameras look like
+              two different afternoons.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ideas">
+    <div class="row">
+      <div class="mark">Three ideas</div>
+      <div>
+        <h2>The decisions the rest of it rests on.</h2>
+
+        <div class="idea">
+          <h3>The kill switch is a routing fact, not a policy.</h3>
+          <p>
+            Inside a profile's namespace the default route belongs to the tunnel. When the VPN
+            drops there is no route for camera traffic to fall back to, so it fails instead of
+            quietly leaving by the host's normal egress and reaching the internet from an address
+            the customer never approved. Control traffic reaches Postgres and Redis over a more
+            specific route that survives the default being replaced.
+          </p>
+        </div>
+
+        <div class="idea">
+          <h3>Segments are MPEG-TS, not MP4.</h3>
+          <p>
+            An MP4 becomes readable when its <code>moov</code> atom is written, which happens when
+            the muxer exits cleanly &mdash; exactly what does not happen when a tunnel dies
+            mid-write. Whatever reached the disk as TS plays. The session is concatenated to MP4 at
+            the end, where there is a clean exit to rely on.
+          </p>
+        </div>
+
+        <div class="idea">
+          <h3>A failure names the hop that failed.</h3>
+          <p>
+            Not &ldquo;connection error&rdquo;. The database password, the missing kernel module,
+            the camera that authenticated and then refused the stream &mdash; each arrives as the
+            sentence an operator can act on. Most of the tests in this codebase exist to keep it
+            that way.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="cost">
+    <div class="row">
+      <div class="mark">What it costs</div>
+      <div>
+        <h2>Measured on the machine it shipped to, not estimated.</h2>
+        <p>
+          A configured camera costs nothing. Cost arrives when somebody watches or records, which
+          means the sizing question is <em>how many people at once</em>, not <em>how many
+          cameras</em>.
+        </p>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>Doing</th><th>CPU</th><th>Memory</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Idle, whole stack</td><td class="num">~5% of one core</td><td class="num">275 MB</td></tr>
+              <tr><td>Preview, H.264 &mdash; stream copy</td><td class="num">3% of one core</td><td class="num">46 MB</td></tr>
+              <tr><td>Preview, H.265 &mdash; transcoded</td><td class="num">55% of one core</td><td class="num">222 MB</td></tr>
+              <tr><td>Recording, any codec</td><td class="num">1% of one core</td><td class="num">43 MB</td></tr>
+              <tr><td>A camera nobody is watching</td><td class="num none">&mdash;</td><td class="num none">&mdash;</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:1.25rem">
+          H.265 previews are the only expensive line here, because no mainstream browser decodes
+          H.265 over WebRTC. Those and only those are re-encoded &mdash; on an NVIDIA card when
+          there is one, with frames staying on the card between decode and encode. Past its
+          budget the machine <strong>refuses</strong> a stream rather than admitting it and
+          juddering across every stream at once, which is the failure that reads like a network
+          problem and is not one.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="roles">
+    <div class="row">
+      <div class="mark">Who sees what</div>
+      <div>
+        <h2>The plumbing is absent, not disabled.</h2>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th></th><th>Superadmin</th><th>Admin</th><th>Viewer</th><th>Demo</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Teams</td><td>all, can create</td><td>own only</td><td>own only</td><td>own only</td></tr>
+              <tr><td>Connection profiles</td><td>all</td><td>own teams</td><td class="none">not shown</td><td class="none">not shown</td></tr>
+              <tr><td>Cameras</td><td>all</td><td>add, remove, test</td><td>watch, record, download</td><td>watch</td></tr>
+              <tr><td>Accounts</td><td>any role</td><td>own teams</td><td class="none">&mdash;</td><td class="none">&mdash;</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:1.25rem">
+          Most people using this want to watch a camera and take a clip away, and a menu full of
+          gateways and storage thresholds is a usability problem for them rather than a security
+          one &mdash; so the sections are gone, not greyed out. The server enforces the same
+          boundary either way. A <strong>demo</strong> account goes one step further: it changes
+          nothing at all, including its own password, which is what makes a published login safe
+          to publish.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="contact">
+    <div class="row">
+      <div class="mark">Talk to us</div>
+      <div class="close">
+        <h2>Running in production for its first customer.</h2>
+        <p>
+          If your cameras are somewhere you cannot route to &mdash; a customer's VPN, a partner's
+          network, a site behind someone else's firewall &mdash; that is the problem this was
+          built for. We will walk your chain with you and tell you honestly whether it fits.
+        </p>
+        <div class="actions">
+          <a class="btn solid" href="mailto:mohammed.xafeer@gmail.com?subject=Causeway">Start a conversation</a>
+          <a class="btn" href="#ladder">See the ladder again</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Causeway</span>
+    <span class="grow"></span>
+    <span>v0.3.0</span>
+    <span>Built for cameras behind other people's networks.</span>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var TITLES = [
+    "VPN dial",
+    "Certificate trust",
+    "Whitelist",
+    "Route to jump host",
+    "SSH auth",
+    "Port forward",
+    "Camera reachable",
+    "Stream handshake"
+  ];
+
+  var GLYPH = { passed: "✓", skipped: "–", failed: "✕", pending: "·" };
+
+  // Each scenario is the same eight gates with a different outcome. The
+  // messages are the ones the product actually emits -- the whole pitch is that
+  // gate 1 failing and gate 8 failing are different afternoons, so showing
+  // three variants of "connection error" would be arguing against ourselves.
+  var SCENARIOS = [
+    {
+      key: "work",
+      label: "work",
+      profile: "Riyadh · MOFA",
+      verdict: "Live. H.264 1920×1080 at 25 fps, first frame in 4.9s.",
+      gates: [
+        { s: "passed",  ms: 2810, m: "Tunnel up on ppp0, 10.212.134.88" },
+        { s: "passed",  ms: 94,   m: "Fingerprint matches the one accepted on 14 Aug" },
+        { s: "skipped", ms: 0,    m: "This profile has no whitelist endpoint" },
+        { s: "passed",  ms: 260,  m: "10.20.30.11 reachable through the tunnel" },
+        { s: "passed",  ms: 910,  m: "Authenticated as ops with a key" },
+        { s: "passed",  ms: 180,  m: "127.0.0.1:20014 forwards to 10.20.30.42:554" },
+        { s: "passed",  ms: 41,   m: "TCP 554 answered in 41 ms" },
+        { s: "passed",  ms: 620,  m: "H.264 1920×1080 at 25 fps" }
+      ]
+    },
+    {
+      key: "gateway",
+      label: "fail at the gateway",
+      profile: "Riyadh · MOFA",
+      verdict: "Stopped at gate 1. Nothing further was attempted.",
+      gates: [
+        { s: "failed", ms: 3400, m: "The gateway refused the connection — check the username and password" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" }
+      ]
+    },
+    {
+      key: "forward",
+      label: "fail at the forward",
+      profile: "Dubai · Facilities",
+      verdict: "Stopped at gate 6. The tunnel is fine; the address behind it is not.",
+      gates: [
+        { s: "passed", ms: 2400, m: "Tunnel up on ppp0, 10.212.134.91" },
+        { s: "passed", ms: 80,   m: "Fingerprint matches the one accepted on 02 Aug" },
+        { s: "passed", ms: 340,  m: "This address is on the customer's allow list" },
+        { s: "passed", ms: 250,  m: "10.20.30.11 reachable through the tunnel" },
+        { s: "passed", ms: 870,  m: "Authenticated as ops with a key" },
+        { s: "failed", ms: 5000, m: "127.0.0.1:20014 forwards to 10.20.30.42:554, and nothing is listening on the far end" },
+        { s: "pending", ms: 0, m: "" },
+        { s: "pending", ms: 0, m: "" }
+      ]
+    },
+    {
+      key: "camera",
+      label: "fail at the camera",
+      profile: "Jeddah · Gate 4",
+      verdict: "Stopped at gate 8. The camera answered, then declined.",
+      gates: [
+        { s: "passed", ms: 2200, m: "Tunnel up on ppp0, 10.212.134.77" },
+        { s: "passed", ms: 90,   m: "Fingerprint matches the one accepted on 21 Jul" },
+        { s: "skipped", ms: 0,   m: "This profile has no whitelist endpoint" },
+        { s: "passed", ms: 230,  m: "10.20.30.11 reachable through the tunnel" },
+        { s: "passed", ms: 940,  m: "Authenticated as ops with a key" },
+        { s: "passed", ms: 170,  m: "127.0.0.1:20019 forwards to 10.20.30.58:554" },
+        { s: "passed", ms: 52,   m: "TCP 554 answered in 52 ms" },
+        { s: "failed", ms: 780,  m: "The camera authenticated and then refused the stream — 401 on DESCRIBE. Its password may contain characters the NVR escaped." }
+      ]
+    }
+  ];
+
+  var gatesEl = document.getElementById("gates");
+  var footEl = document.getElementById("foot");
+  var verdictEl = document.getElementById("verdict");
+  var nameEl = document.getElementById("ladder-name");
+  var scenariosEl = document.getElementById("scenarios");
+  var replayEl = document.getElementById("replay");
+
+  var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var timers = [];
+  var current = SCENARIOS[0];
+
+  // Build the eight rows once. Playing a scenario rewrites their contents
+  // rather than the DOM, so the frame never changes height mid-run and the
+  // page does not jump under the reader.
+  var rows = TITLES.map(function (title, i) {
+    var row = document.createElement("div");
+    row.className = "gate";
+    row.innerHTML =
+      '<span class="n">gate ' + (i + 1) + '</span>' +
+      '<span class="glyph"></span>' +
+      '<span><span class="title">' + title + '</span><span class="msg"></span></span>' +
+      '<span class="ms"></span>';
+    gatesEl.appendChild(row);
+    return {
+      root: row,
+      glyph: row.querySelector(".glyph"),
+      msg: row.querySelector(".msg"),
+      ms: row.querySelector(".ms")
+    };
+  });
+
+  function paint(i, gate) {
+    var row = rows[i];
+    row.root.dataset.status = gate.s;
+    row.glyph.textContent = GLYPH[gate.s];
+    row.msg.textContent = gate.m;
+    row.ms.textContent = !gate.ms ? ""
+      : gate.ms >= 1000 ? (gate.ms / 1000).toFixed(1) + "s"
+      : Math.round(gate.ms) + " ms";
+    row.root.classList.add("shown");
+  }
+
+  function clear() {
+    timers.forEach(clearTimeout);
+    timers = [];
+  }
+
+  function play(scenario) {
+    clear();
+    current = scenario;
+    nameEl.textContent = scenario.profile;
+    verdictEl.textContent = "";
+    footEl.classList.toggle("is-failed", scenario.gates.some(function (g) { return g.s === "failed"; }));
+
+    Array.prototype.forEach.call(scenariosEl.querySelectorAll("button"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.key === scenario.key));
+    });
+
+    if (still) {
+      scenario.gates.forEach(function (g, i) { paint(i, g); });
+      verdictEl.textContent = scenario.verdict;
+      return;
+    }
+
+    rows.forEach(function (row) {
+      row.root.classList.remove("shown");
+      row.root.dataset.status = "pending";
+      row.glyph.textContent = GLYPH.pending;
+      row.msg.textContent = "";
+      row.ms.textContent = "";
+    });
+
+    // Real gate timings compressed by a constant factor: the shape of the wait
+    // is the honest part (the VPN dial dominates), the wall-clock length is not
+    // something anybody should sit through twice.
+    var at = 260;
+    scenario.gates.forEach(function (gate, i) {
+      at += Math.max(140, gate.ms / 7);
+      timers.push(setTimeout(function () { paint(i, gate); }, at));
+    });
+    timers.push(setTimeout(function () { verdictEl.textContent = scenario.verdict; }, at + 320));
+  }
+
+  SCENARIOS.forEach(function (scenario) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.dataset.key = scenario.key;
+    button.textContent = scenario.label;
+    button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", function () { play(scenario); });
+    scenariosEl.appendChild(button);
+  });
+
+  replayEl.addEventListener("click", function () { play(current); });
+
+  // Hold the run until the ladder is actually on screen, so somebody arriving
+  // and scrolling straight past does not miss the one thing worth watching.
+  if ("IntersectionObserver" in window) {
+    var started = false;
+    var watcher = new IntersectionObserver(function (entries) {
+      if (entries[0].isIntersecting && !started) {
+        started = true;
+        play(SCENARIOS[0]);
+        watcher.disconnect();
+      }
+    }, { threshold: 0.25 });
+    watcher.observe(document.getElementById("ladder-frame"));
+  } else {
+    play(SCENARIOS[0]);
+  }
+})();
+</script>
+</body>
+</html>

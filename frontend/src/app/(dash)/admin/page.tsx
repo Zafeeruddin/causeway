@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago } from "@/lib/format";
-import type { Me, Team, User } from "@/lib/types";
+import type { Me, ResetLink, Team, User } from "@/lib/types";
 import {
   Badge, Banner, Button, Card, CardHeader, Empty, Eyebrow, Field, Input, Modal, Select,
 } from "@/components/ui";
@@ -101,6 +101,7 @@ export default function AdminPage() {
                   onChanged={load}
                   onError={setError}
                 />
+                <ResetLinkButton user={user} onError={setError} />
                 <span className="w-20 text-right text-2xs text-fg-3">
                   {ago(user.last_login_at)}
                 </span>
@@ -226,7 +227,7 @@ function RolePicker({
 
   if (locked) {
     return (
-      <Badge tone={user.role === "viewer" ? "muted" : "steel"}>
+      <Badge tone={user.role === "admin" || user.role === "superadmin" ? "steel" : "muted"}>
         {user.role}
         {self ? " · you" : ""}
       </Badge>
@@ -258,10 +259,98 @@ function RolePicker({
         }}
       >
         <option value="viewer">viewer</option>
+        <option value="demo">demo</option>
         <option value="admin">admin</option>
         {superadmin ? <option value="superadmin">superadmin</option> : null}
       </Select>
     </span>
+  );
+}
+
+/**
+ * Handing somebody a way back into their account.
+ *
+ * The link comes back in the response rather than only going to an inbox,
+ * because most of these deployments have no outbound mail and "check your
+ * email" is a dead end on an isolated network. Copying it into whatever channel
+ * you already use to talk to that person is the path that always works.
+ *
+ * Pressing this changes nothing by itself: somebody who has lost their password
+ * keeps working until they redeem the link, so an administrator cannot lock a
+ * person out by clicking it.
+ */
+function ResetLinkButton({
+  user, onError,
+}: {
+  user: User;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [issued, setIssued] = useState<ResetLink | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  if (user.role === "demo") {
+    return <span className="w-24 text-right text-2xs text-fg-3">fixed password</span>;
+  }
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="quiet"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setCopied(false);
+          try {
+            setIssued(await api.resetLink(user.id));
+          } catch (err) {
+            onError(err instanceof ApiError ? err.message : "Could not issue a reset link.");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "…" : "Reset"}
+      </Button>
+
+      {issued ? (
+        <Modal
+          open
+          onClose={() => setIssued(null)}
+          title="One-time reset link"
+          sub={`${user.email} · valid for ${Math.round(issued.expires_in / 60)} minutes, once`}
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-fg-2">
+              {issued.emailed
+                ? "Sent to their address. The copy below is the same link, if you would rather hand it over directly."
+                : "This deployment has no outbound mail, so nothing was sent. Give them this link however you already talk to them."}
+            </p>
+            <code className="break-all rounded border border-line bg-ink px-3 py-2 font-mono text-2xs text-fg-2">
+              {issued.url}
+            </code>
+            <p className="text-xs text-fg-3">
+              Their current password keeps working until they use it. Issuing another link
+              cancels this one.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(issued.url);
+                  setCopied(true);
+                }}
+              >
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+              <Button variant="primary" onClick={() => setIssued(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+    </>
   );
 }
 
@@ -317,12 +406,12 @@ function NewUserModal({
         <Field label="Email">
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </Field>
-        <Field label="Password" hint="At least 10 characters.">
+        <Field label="Password" hint="At least 12 characters. Length beats punctuation.">
           <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            minLength={10}
+            minLength={12}
             autoComplete="new-password"
             required
           />
@@ -331,12 +420,13 @@ function NewUserModal({
           label="Role"
           hint={
             superadmin
-              ? "Superadmins own the deployment. Admins own their own teams. Viewers watch cameras."
-              : "You can create viewers: they watch, record and download, and change nothing."
+              ? "Superadmins own the deployment. Admins own their own teams. Viewers watch and record. A demo account watches and changes nothing, not even its own password."
+              : "Viewers watch, record and download. A demo account only watches, and cannot change its own password -- for a login you intend to publish."
           }
         >
           <Select value={role} onChange={(e) => setRole(e.target.value)} disabled={!superadmin}>
             <option value="viewer">Viewer</option>
+            <option value="demo">Demo (read only)</option>
             {superadmin ? <option value="admin">Admin</option> : null}
             {superadmin ? <option value="superadmin">Superadmin</option> : null}
           </Select>

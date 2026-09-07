@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.config import settings
 from app.enums import (
     GateStatus,
     ProfileState,
@@ -48,6 +49,63 @@ class Me(Model):
     display_name: str
     role: Role
     teams: list[TeamBrief] = []
+    #: Whether this account may change anything. Sent so the dashboard can drop
+    #: the controls rather than render them and have the server say no -- a
+    #: button that always fails is a worse answer than no button.
+    may_write: bool = True
+
+
+def check_password(value: str) -> str:
+    """The one place the password rule lives.
+
+    A length floor and nothing else. Composition rules ("one digit, one
+    symbol") push people towards `Password1!` and are worth less than four more
+    characters, so the deployment sets a length in MIN_PASSWORD_LENGTH and that
+    is the whole policy.
+    """
+    minimum = settings().min_password_length
+    if len(value) < minimum:
+        raise ValueError(f"Use at least {minimum} characters.")
+    return value
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
+    _password = field_validator("password")(check_password)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Changing your own password. The current one is required.
+
+    Not because the session is untrusted, but because a session cookie left
+    open on a shared machine should not be enough to take the account over: the
+    old password is the thing the person walking past does not have.
+    """
+
+    current_password: str
+    password: str
+
+    _password = field_validator("password")(check_password)
+
+
+class ResetLink(Model):
+    """What an administrator gets when they reset somebody's password.
+
+    Returned rather than emailed because most of these deployments have no
+    outbound mail, and "the link is in your inbox" is a dead end on an isolated
+    network. When SMTP is configured the message goes out as well and
+    ``emailed`` says so.
+    """
+
+    url: str
+    expires_in: int
+    emailed: bool
 
 
 # ---- teams and users ---------------------------------------------------
@@ -67,13 +125,15 @@ class TeamOut(TeamBrief):
 class UserCreate(BaseModel):
     email: str
     display_name: str = ""
-    password: str = Field(min_length=10, description="At least 10 characters.")
+    password: str = Field(description="At least MIN_PASSWORD_LENGTH characters.")
     #: Defaults to the least: an account created without saying what it is for
     #: should be able to watch, not to administer.
     role: Role = Role.VIEWER
     #: Teams to put the new account in. Required of an admin, who may only
     #: create accounts inside their own teams; optional for a superadmin.
     team_ids: list[str] = []
+
+    _password = field_validator("password")(check_password)
 
 
 class UserOut(Model):

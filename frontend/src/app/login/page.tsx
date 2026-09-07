@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ApiError, api } from "@/lib/api";
@@ -32,7 +33,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-7">
           <p className="font-mono text-2xs uppercase tracking-[0.16em] text-steel">
-            Camera tunnel
+            Causeway
           </p>
           <h1 className="mt-1.5 text-2xl font-semibold tracking-tight">Control plane</h1>
         </div>
@@ -70,6 +71,12 @@ export default function LoginPage() {
             </Button>
           </form>
         </Card>
+
+        <p className="mt-4 text-center text-xs text-fg-3">
+          <Link href="/forgot" className="transition hover:text-fg">
+            Forgotten your password?
+          </Link>
+        </p>
       </div>
     </main>
   );

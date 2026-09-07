@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, duration } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
-import type { Camera, DownloadLink, LiveEvent, Recording, RecordingState } from "@/lib/types";
+import { writes, type Camera, type DownloadLink, type LiveEvent, type Me, type Recording, type RecordingState } from "@/lib/types";
 import {
   Badge, Banner, Button, Card, CardHeader, Empty, Eyebrow, Modal, type Tone,
 } from "@/components/ui";
@@ -45,6 +45,7 @@ export default function RecordingsPage() {
   const [confirming, setConfirming] = useState<Recording | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [me, setMe] = useState<Me | null>(null);
 
   const load = useCallback(async () => {
     setRecordings(await api.recordings());
@@ -53,7 +54,12 @@ export default function RecordingsPage() {
   useEffect(() => {
     load().catch(() => {});
     api.cameras().then(setCameras).catch(() => {});
+    api.me().then(setMe).catch(() => {});
   }, [load]);
+
+  // Deleting a recording deletes the files. A demo account is refused by the
+  // server; dropping the button keeps that from being a surprise.
+  const mayDelete = me ? me.may_write && writes(me.role) : false;
 
   useLive(
     useCallback((event: LiveEvent) => {
@@ -199,16 +205,18 @@ export default function RecordingsPage() {
                         >
                           Download
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          // In-flight recordings belong to the agent, which is
-                          // still writing them; the server refuses those too.
-                          disabled={IN_FLIGHT.has(recording.state) || removing === recording.id}
-                          onClick={() => setConfirming(recording)}
-                        >
-                          {removing === recording.id ? "Deleting…" : "Delete"}
-                        </Button>
+                        {mayDelete ? (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            // In-flight recordings belong to the agent, which is
+                            // still writing them; the server refuses those too.
+                            disabled={IN_FLIGHT.has(recording.state) || removing === recording.id}
+                            onClick={() => setConfirming(recording)}
+                          >
+                            {removing === recording.id ? "Deleting…" : "Delete"}
+                          </Button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

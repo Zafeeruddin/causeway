@@ -11,7 +11,8 @@
 #   API_BIND=127.0.0.1:8100     WEB_BIND=127.0.0.1:3000
 #   WHEP_BIND=127.0.0.1:8889    MEDIA_BIND=8189
 #
-# Only MEDIA_BIND is public. Everything else is loopback for nginx to proxy.
+# MEDIA_BIND is the optional low-latency fast path. Everything else is loopback
+# for nginx/Next to proxy, including the automatic HLS fallback over HTTPS.
 #
 # Every service restarts unless stopped, so the stack survives a reboot.
 
@@ -57,8 +58,8 @@ services:
     ports:
       # WHEP signalling, for nginx to proxy. Loopback only.
       - "${WHEP_BIND:-127.0.0.1:8889}:8889"
-      # The video itself. This one is public: it goes straight from MediaMTX to
-      # the browser over UDP and does not pass through nginx.
+      # Direct low-latency video. Publish/forward it when possible; viewers on
+      # networks that block it automatically fall back to HLS over HTTPS 443.
       - "${MEDIA_BIND:-8189}:8189/udp"
       #
       # RTSP ingest (8554) and the control API (9997) are deliberately NOT

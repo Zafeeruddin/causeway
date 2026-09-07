@@ -1,9 +1,20 @@
 /** Mirrors app/api/schemas.py. Kept hand-written and small rather than generated. */
 
-export type Role = "superadmin" | "admin" | "viewer";
+export type Role = "superadmin" | "admin" | "viewer" | "demo";
 
 /** Administers something somewhere. Which team is the server's question. */
 export const administers = (role: Role) => role === "superadmin" || role === "admin";
+
+/** May change anything at all. False only for demo accounts, which exist so an
+ *  instance can be put on the internet with a published login. */
+export const writes = (role: Role) => role !== "demo";
+
+export const ROLE_LABELS: Record<Role, string> = {
+  superadmin: "Superadmin",
+  admin: "Admin",
+  viewer: "Viewer",
+  demo: "Demo (read only)",
+};
 
 export type ReachMode = "direct" | "vpn_only" | "jump_only" | "vpn_jump";
 export type VpnKind = "none" | "fortinet" | "globalprotect" | "wireguard";
@@ -17,7 +28,15 @@ export type RecordingState =
   | "queued" | "recording" | "recovering" | "finalizing" | "complete" | "failed" | "cancelled";
 
 export interface Team { id: string; name: string; slug: string; description?: string; member_count?: number }
-export interface Me { id: string; email: string; display_name: string; role: Role; teams: Team[] }
+export interface Me {
+  id: string; email: string; display_name: string; role: Role; teams: Team[];
+  /** Sent by the server so the dashboard can drop controls rather than render
+   *  them and have every click come back 403. */
+  may_write: boolean;
+}
+
+/** What an administrator gets back when they reset somebody's password. */
+export interface ResetLink { url: string; expires_in: number; emailed: boolean }
 
 export interface Profile {
   id: string; team_id: string; name: string; mode: ReachMode;
