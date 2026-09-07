@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, modeLabel } from "@/lib/format";
 import { administers, writes, type Camera, type Gate, type ImportResult, type Me, type Profile, type Source } from "@/lib/types";
@@ -13,23 +13,42 @@ import {
 } from "@/components/ui";
 
 type AddMode = "single" | "paste" | "csv";
+const PAGE_SIZE = 25;
 
 export default function CamerasPage() {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [cameras, setCameras] = useState<Camera[]>([]);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [gates, setGates] = useState<Record<string, Gate[]>>({});
   const [error, setError] = useState("");
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelection] = useState<Map<string, Camera>>(new Map());
   const [recording, setRecording] = useState(false);
   const [watching, setWatching] = useState<Camera | null>(null);
+  const loadRequest = useRef(0);
 
   const load = useCallback(async () => {
-    setCameras(await api.cameras());
-  }, []);
+    const request = ++loadRequest.current;
+    setLoading(true);
+    try {
+      const result = await api.cameraPage(search, page, PAGE_SIZE);
+      if (request !== loadRequest.current) return;
+      setCameras(result.items);
+      setTotal(result.total);
+      setPages(result.pages);
+      if (result.page !== page) setPage(result.page);
+    } finally {
+      if (request === loadRequest.current) setLoading(false);
+    }
+  }, [page, search]);
 
   useEffect(() => {
     api
@@ -41,8 +60,21 @@ export default function CamerasPage() {
         if (administers(who.role)) api.profiles().then(setProfiles).catch(() => {});
       })
       .catch(() => {});
-    load().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    load().catch((err) => {
+      setError(err instanceof ApiError ? err.message : "The cameras could not be loaded.");
+    });
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPage(1);
+      setSearch(query.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   const mayManage = me ? administers(me.role) : false;
   // Watching is the whole point of a demo account; recording writes to the
@@ -63,11 +95,11 @@ export default function CamerasPage() {
     }
   }
 
-  function toggle(id: string) {
+  function toggle(camera: Camera) {
     setSelection((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      const next = new Map(current);
+      if (next.has(camera.id)) next.delete(camera.id);
+      else next.set(camera.id, camera);
       return next;
     });
   }
@@ -78,7 +110,7 @@ export default function CamerasPage() {
         <div>
           <Eyebrow>Cameras</Eyebrow>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            {cameras.length} camera{cameras.length === 1 ? "" : "s"}
+            {total} camera{total === 1 ? "" : "s"}{search ? " found" : ""}
           </h1>
         </div>
         <div className="flex gap-2">
@@ -98,19 +130,46 @@ export default function CamerasPage() {
         </div>
       </div>
 
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search name, camera ID, IP address, location, or connection…"
+            aria-label="Search cameras"
+            maxLength={200}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-2xs text-fg-3 tnum">
+          {loading
+            ? "Searching…"
+            : total
+              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} of ${total}`
+              : "No results"}
+        </span>
+      </div>
+
       {error ? <Banner tone="bad" title={error} /> : null}
 
-      {cameras.length === 0 ? (
+      {loading && cameras.length === 0 ? (
+        <Card>
+          <Empty title="Loading cameras…" />
+        </Card>
+      ) : cameras.length === 0 ? (
         <Card>
           <Empty
-            title="No cameras yet"
+            title={search ? "No cameras match that search" : "No cameras yet"}
             hint={
-              mayManage
+              search
+                ? "Try a camera name, ID, IP address, location, or connection profile."
+                : mayManage
                 ? "Add one at a time, paste a block of RTSP URLs, or upload a CSV exported from your NVR."
                 : "An administrator of your team adds cameras here."
             }
             action={
-              mayManage ? (
+              search ? (
+                <Button onClick={() => setQuery("")}>Clear search</Button>
+              ) : mayManage ? (
                 <Button variant="primary" onClick={() => setAdding(true)}>
                   Add cameras
                 </Button>
@@ -128,15 +187,21 @@ export default function CamerasPage() {
               gates={gates[camera.id] ?? []}
               testing={testing === camera.id}
               selected={selection.has(camera.id)}
-              onToggle={() => toggle(camera.id)}
+              onToggle={() => toggle(camera)}
               onPreview={() => setWatching(camera)}
               onTest={() => test(camera)}
               onDelete={async () => {
                 await api.deleteCamera(camera.id);
+                setSelection((current) => {
+                  const next = new Map(current);
+                  next.delete(camera.id);
+                  return next;
+                });
                 await load();
               }}
             />
           ))}
+          <CameraPagination page={page} pages={pages} setPage={setPage} />
         </div>
       )}
 
@@ -165,12 +230,12 @@ export default function CamerasPage() {
 
       <RecordModal
         open={recording}
-        cameraIds={[...selection]}
-        cameras={cameras}
+        cameraIds={[...selection.keys()]}
+        cameras={[...selection.values()]}
         onClose={() => setRecording(false)}
         onStarted={() => {
           setRecording(false);
-          setSelection(new Set());
+          setSelection(new Map());
           // A recording is a background job with a life of its own -- it
           // queues, records, finalises and uploads over minutes. Leaving the
           // person on the camera list gives them nothing to watch it happen
@@ -180,6 +245,63 @@ export default function CamerasPage() {
       />
     </div>
   );
+}
+
+function CameraPagination({
+  page,
+  pages,
+  setPage,
+}: {
+  page: number;
+  pages: number;
+  setPage: (page: number) => void;
+}) {
+  if (pages <= 1) return null;
+  const visible = paginationWindow(page, pages);
+
+  return (
+    <nav
+      className="flex flex-wrap items-center justify-center gap-1 pt-2"
+      aria-label="Camera pages"
+    >
+      <Button size="sm" onClick={() => setPage(page - 1)} disabled={page === 1}>
+        Previous
+      </Button>
+      {visible.map((item, index) =>
+        item === "gap" ? (
+          <span key={`gap-${index}`} className="px-1.5 text-xs text-fg-3" aria-hidden>
+            …
+          </span>
+        ) : (
+          <Button
+            key={item}
+            size="sm"
+            variant={item === page ? "primary" : "quiet"}
+            onClick={() => setPage(item)}
+            aria-current={item === page ? "page" : undefined}
+            aria-label={`Page ${item}`}
+          >
+            {item}
+          </Button>
+        ),
+      )}
+      <Button size="sm" onClick={() => setPage(page + 1)} disabled={page === pages}>
+        Next
+      </Button>
+    </nav>
+  );
+}
+
+function paginationWindow(page: number, pages: number): (number | "gap")[] {
+  const wanted = new Set([1, pages, page - 1, page, page + 1]);
+  const numbers = [...wanted].filter((value) => value >= 1 && value <= pages).sort((a, b) => a - b);
+  const result: (number | "gap")[] = [];
+  for (const value of numbers) {
+    const previous = result[result.length - 1];
+    if (typeof previous === "number" && value - previous > 1) result.push("gap");
+    result.push(value);
+  }
+  return result;
 }
 
 function CameraRow({

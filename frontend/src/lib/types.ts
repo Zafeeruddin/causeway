@@ -77,6 +77,10 @@ export interface Camera {
   location: string; is_enabled: boolean; sources: Source[];
 }
 
+export interface CameraPage {
+  items: Camera[]; total: number; page: number; page_size: number; pages: number;
+}
+
 /** A live WebRTC view of one camera, held open only while somebody is watching. */
 export interface Preview {
   id: string; camera_id: string; source_kind: SourceKind;
