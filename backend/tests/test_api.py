@@ -648,7 +648,11 @@ async def test_an_admin_sees_only_their_own_teams_and_people(as_member, as_admin
     assert {t["slug"] for t in mine.json()} == {"acme"}
 
     people = await as_admin.get("/api/admin/users")
-    assert {u["email"] for u in people.json()} == {"qa@example.com", "watch@example.com"}
+    assert {u["email"] for u in people.json()} == {
+        "qa@example.com",
+        "watch@example.com",
+        "demo@example.com",
+    }
 
 
 async def test_an_admin_cannot_create_an_account_above_their_own_reach(as_member, seeded):

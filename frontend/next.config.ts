@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const API = process.env.API_ORIGIN ?? "http://localhost:8000";
 const MEDIAMTX = process.env.MEDIAMTX_ORIGIN ?? "http://localhost:8889";
+const MEDIAMTX_HLS = process.env.MEDIAMTX_HLS_ORIGIN ?? "http://localhost:8888";
 
 const config: NextConfig = {
   reactStrictMode: true,
@@ -23,6 +24,10 @@ const config: NextConfig = {
       // and answer go through here; the video itself flows straight from
       // MediaMTX to the browser over UDP.
       { source: "/rtc/:path*", destination: `${MEDIAMTX}/:path*` },
+      // Compatible preview fallback. Unlike WebRTC media, HLS stays on the
+      // same HTTPS connection and therefore crosses CGNAT and restrictive
+      // mobile/corporate networks without exposing another public port.
+      { source: "/hls/:path*", destination: `${MEDIAMTX_HLS}/:path*` },
     ];
   },
 };

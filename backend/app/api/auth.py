@@ -97,3 +97,20 @@ async def require_superadmin(principal: Principal = Depends(current_principal)) 
     if not principal.is_superadmin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can do this.")
     return principal
+
+
+async def require_write(principal: Principal = Depends(current_principal)) -> Principal:
+    """Anything that changes state, for the tiers below administrator.
+
+    Administrative routes already end at :func:`require_admin`, which a demo
+    account fails. What is left is the handful of things a viewer may do that
+    write -- start a recording, delete one, set a password -- and those come
+    through here. Kept as its own dependency rather than a line inside each
+    handler so the omission is visible in the signature.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This is a demo account. It can watch cameras but cannot change anything.",
+        )
+    return principal

@@ -87,6 +87,11 @@ class User(Base, TimestampMixin):
         """Administers their own teams. Says nothing about which teams those are."""
         return Role(self.role).may_administer
 
+    @property
+    def may_write(self) -> bool:
+        """Whether this account may change anything, including its own password."""
+        return Role(self.role).may_write
+
 
 class Team(Base, TimestampMixin):
     __tablename__ = "teams"

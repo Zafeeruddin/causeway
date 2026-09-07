@@ -10,6 +10,66 @@ no migrations.
 
 ---
 
+## [0.3.0] — 2026-08-30
+
+Everything needed to put an instance on the public internet with a login you are
+willing to print. Nothing here is demo-specific plumbing: the limits, the reset
+path and the read-only tier are product, and the first customer gets them too.
+
+### Added
+
+- **A `demo` role** — a viewer with the writing taken away. It watches cameras
+  and changes nothing: no recordings, no deletions, and **not its own password**,
+  which is the point of the tier. A shared login the first visitor can change is
+  a login you have given away, and one that can add a camera can point one at any
+  address the server can reach. Created with
+  `cam create-user you@example.com --role demo --team <slug>`.
+- **Sign-in rate limiting**, on two windows. Per address stops a password list
+  from one machine; per account stops the same list spread across many, which a
+  per-address limit misses entirely. Only failures count and a success clears
+  both, so mistyping twice and then getting it right is never rationed. The limit
+  is checked *before* the password is verified — otherwise it is a slightly
+  slower brute force that also spends the server's CPU on argon2.
+- **`TRUSTED_PROXY_HOPS`**, because the above is worth nothing behind nginx
+  without it: at the default of `0` every caller looks like the proxy and shares
+  one bucket. A count rather than a boolean, since `X-Forwarded-For` is written
+  by the client too and reading it blindly hands an attacker unlimited identities.
+- **Password reset**, three ways in. An administrator issues a one-time link from
+  the Admin page and hands it over — the path that works on a network with no
+  outbound mail. Set `SMTP_HOST` and `SMTP_FROM` and the self-service form turns
+  itself on; there is no second switch. `cam reset-link` and `cam set-password`
+  work from the machine when nobody can get in at all.
+- **Changing your own password**, at `/account`. The current one is required, so
+  a session left open on a shared machine is not enough to take the account over.
+- `cam create-user`, `cam set-password`, `cam reset-link`.
+- **A landing page** in `site/`, static and self-contained: one HTML file with no
+  build step, for Cloudflare Pages or anything else that serves a directory.
+
+### Changed
+
+- `/api/auth/me` reports `may_write`, so the dashboard drops the controls a
+  demo account cannot use rather than rendering them and having every click come
+  back 403.
+- The minimum password length is `MIN_PASSWORD_LENGTH`, default 12, up from a
+  hard-coded 10. A length floor and nothing else — composition rules push people
+  towards `Password1!` and are worth less than four more characters.
+- The dashboard says **Causeway**, not "Camera tunnel". A leftover from the
+  rebrand, in the two places a person actually reads it.
+
+### Notes on the reset token
+
+It is stateless: signed with the app secret and carrying a keyed fingerprint of
+the password hash it was issued against. That was a constraint rather than a
+preference — a `password_resets` table needs a migration, and this schema has
+none yet (ROADMAP entry 10), so a stored token would have been a feature that
+could not be deployed to the customer already running. It pays for itself twice
+anyway: redemption replaces the hash, so the link stops working without anything
+marking it used, and any other password change invalidates every link
+outstanding. Issuing a link changes nothing, so an administrator cannot lock
+somebody out by pressing the button.
+
+---
+
 ## [0.2.0] — 2026-08-30
 
 First production deployment. Everything below was found or built while getting

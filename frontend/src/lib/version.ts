@@ -4,4 +4,4 @@
  * shell renders before any request completes, and a version that appears a
  * second late is a version nobody sees.
  */
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";

@@ -8,8 +8,8 @@
 
 Watch them live, record them, and know which hop failed when one does.
 
-[![version](https://img.shields.io/badge/version-0.2.0-79b7d8)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-267%20passing-4c9a6a)](backend/tests)
+[![version](https://img.shields.io/badge/version-0.3.0-79b7d8)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-298%20passing-4c9a6a)](backend/tests)
 [![python](https://img.shields.io/badge/python-3.12-3776ab)](backend/pyproject.toml)
 [![next](https://img.shields.io/badge/next.js-16-black)](frontend/package.json)
 
@@ -42,7 +42,9 @@ looks like *never checked*.
   when the cameras are already reachable. One network namespace per profile, so
   three teams can hold three VPNs on one host and a dropped tunnel takes its own
   traffic down and nobody else's.
-- **Watches** — live preview in the browser over WebRTC. Two people watching one
+- **Watches** — live preview uses WebRTC when the direct low-latency path is
+  reachable and automatically falls back to low-latency HLS over HTTPS on
+  mobile, CGNAT, and restrictive corporate networks. Two people watching one
   camera cost one camera session, because cameras cap those hard.
 - **Records** — RTSP and the inferred HLS feed at once, into sealed segments
   that survive a mid-write outage, uploaded to S3-compatible storage. A recording
@@ -100,17 +102,41 @@ sizing — see **[deploy/production.md](deploy/production.md)**.
 
 ## Roles
 
-| | Superadmin | Admin | Viewer |
-|---|---|---|---|
-| Teams | all, can create | own only | own only |
-| Connection profiles | all | own teams | **section not shown** |
-| Cameras | all | add, remove, test | see, preview, record, download |
-| Accounts | any role | viewers, own teams | — |
+| | Superadmin | Admin | Viewer | Demo |
+|---|---|---|---|---|
+| Teams | all, can create | own only | own only | own only |
+| Connection profiles | all | own teams | **section not shown** | **section not shown** |
+| Cameras | all | add, remove, test | see, preview, record, download | see, preview |
+| Accounts | any role | viewers, own teams | — | — |
+| Own password | change | change | change | **cannot** |
 
 Viewers are not shown the plumbing and then stopped at the door — the sections
 are absent. Most people using this want to watch a camera and take a clip away,
 and a menu full of gateways and storage thresholds is a usability problem for
 them, not a security one. The server enforces the same boundary either way.
+
+**Demo** is the tier for a login you intend to publish. It watches and changes
+nothing — not a camera, not a recording, not its own password. That last one is
+the point of it: a shared login the first visitor can change is a login you have
+given away, and a login that can add a camera can point one at any address the
+server can reach.
+
+## Getting back in
+
+An administrator issues a one-time reset link from the Admin page and hands it
+over — which works on a network with no outbound mail, where "check your inbox"
+is a dead end. Set `SMTP_HOST` and `SMTP_FROM` and the self-service form starts
+working as well; there is no second switch.
+
+The link is stateless and carries a fingerprint of the password hash it was
+issued against, so redeeming it invalidates it, and any other password change
+invalidates every link outstanding. Issuing one changes nothing by itself, so an
+administrator cannot lock somebody out by pressing the button. When nobody can
+get in at all, `cam reset-link` and `cam set-password` work from the machine.
+
+Sign-ins are rate limited per address and per account. Behind a proxy this needs
+`TRUSTED_PROXY_HOPS` set, or every caller looks like nginx and shares one limit —
+see [deploy/production.md](deploy/production.md).
 
 ## What it costs to run
 
@@ -140,7 +166,9 @@ backend/app/
   services/     connections, preview, playback, camera import
   storage/      object store, key layout, retention
   api/routes/   auth, profiles, cameras, recordings, admin
+  security/     secrets sealing, redaction, sign-in limits, reset tokens
 frontend/src/   Next.js dashboard
+site/           the landing page, static and self-contained
 deploy/         Dockerfiles, production compose, runbooks
 ```
 
@@ -157,7 +185,7 @@ deploy/         Dockerfiles, production compose, runbooks
 
 ## Status
 
-**0.2.0 — running in production for its first customer.**
+**0.3.0 — running in production for its first customer.**
 
 Still `0.x` on purpose: the schema has no migrations yet
 ([ROADMAP entry 10](ROADMAP.md)), so a release can still require a rebuild

@@ -118,6 +118,42 @@ class Settings(BaseSettings):
     #: default is rounded up so a busy machine is refused before it judders.
     cpu_cost_per_stream: float = 0.6
 
+    # ---- accounts and access ----
+    #: Failed sign-ins allowed from one address before it is made to wait, and
+    #: the window they are counted over. Generous, because the point is to make
+    #: a password list take geological time, not to inconvenience someone whose
+    #: caps lock is on.
+    login_attempts_per_address: int = 20
+    login_attempts_per_account: int = 6
+    login_attempt_window_seconds: int = 300
+    #: Password resets requested from one address per hour.
+    reset_requests_per_address: int = 5
+    reset_request_window_seconds: int = 3600
+    #: How many proxies sit in front of this API. Zero means read the socket
+    #: address and ignore X-Forwarded-For -- which is correct and safe when
+    #: nothing is proxying, and wrong the moment nginx is, because then every
+    #: caller looks like 127.0.0.1 and shares one rate limit. Set it to 1 for a
+    #: single nginx. See app/security/throttle.py for why it is not a boolean.
+    trusted_proxy_hops: int = 0
+    #: Shortest password this deployment accepts. Applies to reset and to the
+    #: accounts an administrator creates.
+    min_password_length: int = 12
+    #: Where this deployment is reached from, used to build reset links.
+    #: Empty means links are built from the request, which is right for a LAN
+    #: and wrong behind a proxy that rewrites the Host header.
+    public_base_url: str = ""
+
+    # ---- outbound mail (optional) ----
+    # Set SMTP_HOST and SMTP_FROM and self-service password reset turns on.
+    # Leave them and administrators issue reset links by hand instead.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+
     gate_timeout_seconds: float = 20.0
     vpn_dial_timeout_seconds: float = 45.0
     heartbeat_seconds: int = 30

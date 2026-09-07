@@ -80,6 +80,11 @@ class Principal:
         """Whether they administer anything anywhere. Not a licence over a team."""
         return self.role.may_administer
 
+    @property
+    def may_write(self) -> bool:
+        """Whether they may change anything at all. False only for demo accounts."""
+        return self.role.may_write
+
     def may_see(self, team_id: str | None) -> bool:
         return self.is_superadmin or (team_id is not None and team_id in self.team_ids)
 

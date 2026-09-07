@@ -8,15 +8,18 @@ write asks which team it is writing to.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import mail
 from app.api.auth import hash_password, require_admin, require_superadmin
 from app.api.deps import deny_unless_team_admin
+from app.api.routes.auth import reset_url
 from app.api.schemas import (
     MembershipRequest,
+    ResetLink,
     TeamCreate,
     TeamOut,
     UserCreate,
@@ -26,6 +29,7 @@ from app.api.schemas import (
 from app.db import Principal, get_session
 from app.enums import Role
 from app.models import Team, TeamMember, User
+from app.security.reset import RESET_TTL_SECONDS, issue_reset
 from app.services.audit import record
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -179,17 +183,9 @@ async def update_user(
     if user.id == principal.user_id and body.role is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot change your own role.")
 
-    if not principal.is_superadmin:
-        if Role(user.role) is Role.SUPERADMIN:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, "Only a superadmin can change this account."
-            )
-        if body.role is not None and Role(body.role) is Role.SUPERADMIN:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can grant that role.")
-        rows = await db.execute(select(TeamMember.team_id).where(TeamMember.user_id == user.id))
-        shared = set(rows.scalars().all()) & principal.team_ids
-        if not shared:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user.")
+    await _deny_unless_reachable(db, principal, user)
+    if not principal.is_superadmin and body.role is not None and Role(body.role) is Role.SUPERADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can grant that role.")
 
     changed: dict[str, object] = {}
     if body.role is not None:
@@ -206,6 +202,72 @@ async def update_user(
     if changed:
         await record(db, principal, "user.update", "user", user.id, changed)
     return UserOut.model_validate(user)
+
+
+@router.post("/users/{user_id}/reset-link", response_model=ResetLink)
+async def issue_reset_link(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_admin),
+) -> ResetLink:
+    """Produce a one-time link that lets somebody set a new password.
+
+    The administrative half of password reset, and the half that works
+    everywhere: most of these deployments sit on a network with no outbound
+    mail, where "check your inbox" is a dead end. The link comes back in the
+    response for the administrator to hand over however they already talk to
+    that person, and is emailed as well when SMTP is configured.
+
+    Issuing a link does not change the password. Somebody who has lost theirs
+    keeps working until they redeem it, and an administrator cannot lock a
+    person out by clicking this -- which is what setting a random password here
+    instead would do.
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user.")
+    await _deny_unless_reachable(db, principal, user)
+    if not user.may_write:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Demo accounts have a fixed password. Change the role first if this "
+            "is meant to be a real account.",
+        )
+
+    token = issue_reset(user.id, user.password_hash)
+    url = reset_url(request, token)
+
+    emailed = False
+    if mail.mail_available():
+        try:
+            await mail.send(
+                user.email,
+                "Reset your Causeway password",
+                f"An administrator started a password reset for your account.\n\n{url}\n\n"
+                "The link works once and stops working in an hour.\n",
+            )
+            emailed = True
+        except Exception:  # noqa: BLE001 - the link in the response is the fallback
+            pass
+
+    await record(db, principal, "user.reset_link", "user", user.id, {"emailed": emailed})
+    return ResetLink(url=url, expires_in=RESET_TTL_SECONDS, emailed=emailed)
+
+
+async def _deny_unless_reachable(db: AsyncSession, principal: Principal, user: User) -> None:
+    """The same reach test :func:`update_user` applies, in one place.
+
+    A 404 rather than a 403 when an admin names somebody outside their teams:
+    "you may not touch that account" confirms the account exists.
+    """
+    if principal.is_superadmin:
+        return
+    if Role(user.role) is Role.SUPERADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a superadmin can change this account.")
+    rows = await db.execute(select(TeamMember.team_id).where(TeamMember.user_id == user.id))
+    if not set(rows.scalars().all()) & principal.team_ids:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user.")
 
 
 @router.post("/teams/{team_id}/members", status_code=status.HTTP_204_NO_CONTENT)

@@ -26,11 +26,30 @@ class Role(StrEnum):
     #: Their own teams' cameras, and only the parts of that a person watching a
     #: camera needs: preview, record, download. No profiles, no plumbing.
     VIEWER = "viewer"
+    #: A viewer with the writing taken away. Sees the teams it is in and can
+    #: watch a camera live; cannot record, cannot delete, cannot change its own
+    #: password. It exists for one situation -- an account whose credentials are
+    #: published, on an instance reachable from the internet -- and the password
+    #: rule is the point of it: a shared login the first visitor can change is a
+    #: login you have given away.
+    DEMO = "demo"
 
     @property
     def may_administer(self) -> bool:
         """Whether this role manages anything at all, in any team."""
         return self in (Role.SUPERADMIN, Role.ADMIN)
+
+    @property
+    def may_write(self) -> bool:
+        """Whether this role may change anything at all.
+
+        Separate from :attr:`may_administer` because they answer different
+        questions. A viewer administers nothing and still writes -- starts a
+        recording, deletes one, changes its own password. Demo is the only tier
+        where the answer is no, and every mutating route asks this rather than
+        listing roles for itself, so a new route is safe by construction.
+        """
+        return self is not Role.DEMO
 
 
 class VpnKind(StrEnum):

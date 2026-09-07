@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
+import { hlsPreviewUrl, openHls, type HlsSession } from "@/lib/hls";
 import type { Camera, Preview, SourceKind } from "@/lib/types";
 import { WhepError, openWhep, type WhepSession } from "@/lib/whep";
 import { Badge, Button, Spinner } from "./ui";
@@ -17,8 +18,8 @@ import { Badge, Button, Spinner } from "./ui";
  */
 
 type View =
-  | { phase: "starting" }
-  | { phase: "live" }
+  | { phase: "starting"; fallback?: boolean }
+  | { phase: "live"; transport: "direct" | "compatible" }
   /** The start was refused. The message is the server's, quoted. */
   | { phase: "failed"; message: string }
   | { phase: "ended"; message: string };
@@ -33,8 +34,10 @@ type View =
  */
 interface Attempt {
   abandoned: boolean;
+  fallbackStarted: boolean;
+  detachMediaListeners: (() => void) | null;
   preview: Preview | null;
-  session: WhepSession | null;
+  session: WhepSession | HlsSession | null;
 }
 
 export function LivePreview({
@@ -53,6 +56,8 @@ export function LivePreview({
   const teardown = useCallback((attempt: Attempt | null) => {
     if (!attempt || attempt.abandoned) return;
     attempt.abandoned = true;
+    attempt.detachMediaListeners?.();
+    attempt.detachMediaListeners = null;
     attempt.session?.close();
     attempt.session = null;
     const started = attempt.preview;
@@ -68,7 +73,13 @@ export function LivePreview({
   }, []);
 
   useEffect(() => {
-    const attempt: Attempt = { abandoned: false, preview: null, session: null };
+    const attempt: Attempt = {
+      abandoned: false,
+      fallbackStarted: false,
+      detachMediaListeners: null,
+      preview: null,
+      session: null,
+    };
     attemptRef.current = attempt;
     setView({ phase: "starting" });
     setPreview(null);
@@ -85,14 +96,64 @@ export function LivePreview({
         attempt.preview = started;
         setPreview(started);
 
+        let directEverLive = false;
+
+        const useCompatiblePreview = (failure?: unknown) => {
+          if (attempt.abandoned || attempt.fallbackStarted) return;
+          attempt.fallbackStarted = true;
+          attempt.detachMediaListeners?.();
+          attempt.detachMediaListeners = null;
+          attempt.session?.close();
+          attempt.session = null;
+
+          const video = videoRef.current;
+          if (!video) return;
+          video.srcObject = null;
+          setView({ phase: "starting", fallback: true });
+
+          let fallbackEverLive = false;
+          void openHls(video, hlsPreviewUrl(started.path), (state) => {
+              if (attempt.abandoned) return;
+              if (state === "live") {
+                fallbackEverLive = true;
+                setView({ phase: "live", transport: "compatible" });
+              } else if (state === "lost") {
+                setView({
+                  phase: "failed",
+                  message: fallbackEverLive
+                    ? "The connection to the stream dropped."
+                    : compatiblePreviewFailed(failure, started.codec),
+                });
+              }
+            })
+            .then((fallbackSession) => {
+              if (attempt.abandoned) fallbackSession.close();
+              else attempt.session = fallbackSession;
+            })
+            .catch((error) => {
+              if (!attempt.abandoned) {
+                setView({
+                  phase: "failed",
+                  message: compatiblePreviewFailed(error, started.codec),
+                });
+              }
+            });
+
+          window.setTimeout(() => {
+            if (attempt.abandoned || fallbackEverLive) return;
+            setView({
+              phase: "failed",
+              message: compatiblePreviewFailed(failure, started.codec),
+            });
+          }, FALLBACK_MEDIA_TIMEOUT_MS);
+        };
+
+        // If WebRTC cannot negotiate this codec, Safari's native HLS support
+        // can still play common camera HEVC streams. Go straight to that path
+        // instead of knowingly waiting on a black WebRTC session.
         const undecodable = codecComplaint(started.codec);
         if (undecodable) {
-          // WebRTC's own answer to this is to negotiate, agree on nothing, and
-          // hand back a session that stays black. Asking the browser first is
-          // the difference between a reason and a blank rectangle.
-          void api.stopPreview(started.camera_id, started.id, started.viewer).catch(() => {});
-          attempt.preview = null;
-          setView({ phase: "failed", message: undecodable });
+          useCompatiblePreview(new Error(undecodable));
           return;
         }
 
@@ -101,17 +162,39 @@ export function LivePreview({
         // and answer travel over HTTPS through the proxy, while the video comes
         // straight from the preview server over UDP. A deployment that has not
         // opened that port looks perfectly healthy right up to here.
-        let everLive = false;
-        const session = await openWhep(started.whep_url, (state) => {
-          if (attempt.abandoned) return;
-          if (state === "live") {
-            everLive = true;
-            setView({ phase: "live" });
-          } else if (state === "lost") {
-            end(everLive ? "The connection to the stream dropped." : mediaUnreachable());
-          }
-        });
+        const directVideo = videoRef.current;
+        const markDirectVideoLive = () => {
+          if (attempt.abandoned || attempt.fallbackStarted) return;
+          directEverLive = true;
+          setView({ phase: "live", transport: "direct" });
+        };
+        directVideo?.addEventListener("playing", markDirectVideoLive);
+        directVideo?.addEventListener("loadeddata", markDirectVideoLive);
+        attempt.detachMediaListeners = () => {
+          directVideo?.removeEventListener("playing", markDirectVideoLive);
+          directVideo?.removeEventListener("loadeddata", markDirectVideoLive);
+        };
+
+        let session: WhepSession;
+        try {
+          session = await openWhep(started.whep_url, (state) => {
+            if (attempt.abandoned) return;
+            if (state === "lost") {
+              useCompatiblePreview();
+            }
+          });
+        } catch (error) {
+          useCompatiblePreview(error);
+          return;
+        }
         if (attempt.abandoned) {
+          session.close();
+          return;
+        }
+        // A failed connection can emit its state while setRemoteDescription is
+        // still resolving. In that race the fallback already owns the video;
+        // do not overwrite its session with the dead peer connection.
+        if (attempt.fallbackStarted) {
           session.close();
           return;
         }
@@ -121,10 +204,8 @@ export function LivePreview({
         // ICE can also simply never resolve, in which case no state arrives at
         // all and the player would sit on "Connecting…" for ever.
         window.setTimeout(() => {
-          if (attempt.abandoned || everLive) return;
-          setView((current) =>
-            current.phase === "starting" ? { phase: "failed", message: mediaUnreachable() } : current,
-          );
+          if (attempt.abandoned || directEverLive || attempt.fallbackStarted) return;
+          useCompatiblePreview();
         }, MEDIA_TIMEOUT_MS);
       } catch (error) {
         if (attempt.abandoned) return;
@@ -182,7 +263,9 @@ export function LivePreview({
             <Spinner className="text-steel" />
             <p className="text-xs text-fg-2">Connecting to the camera…</p>
             <p className="max-w-xs text-2xs text-fg-3">
-              The camera is dialled on demand, so the first frame can take a few seconds.
+              {view.fallback
+                ? "The direct video path is blocked. Switching to a compatible HTTPS preview…"
+                : "The camera is dialled on demand, so the first frame can take a few seconds."}
             </p>
           </Overlay>
         ) : null}
@@ -209,7 +292,9 @@ export function LivePreview({
 
         {view.phase === "live" ? (
           <div className="absolute left-3 top-3">
-            <Badge tone="ok">live</Badge>
+            <Badge tone="ok">
+              {view.transport === "compatible" ? "live · compatible" : "live"}
+            </Badge>
           </div>
         ) : null}
       </div>
@@ -270,21 +355,21 @@ function explain(error: unknown): string {
  * broken" and "this camera is broken" look identical from here.
  */
 /** How long to wait for the first frame before calling the media leg blocked. */
-const MEDIA_TIMEOUT_MS = 15_000;
+const MEDIA_TIMEOUT_MS = 7_000;
+const FALLBACK_MEDIA_TIMEOUT_MS = 15_000;
 
 /**
  * The message for a stream that negotiated and then never arrived.
  *
- * Almost always the same cause, and almost never guessed correctly from a
- * generic failure: signalling goes through the reverse proxy on 443 and the
- * video does not. It is worth naming the port, because the person reading this
- * is usually the person who can open it.
+ * By the time this is shown both the direct media path and the HTTPS fallback
+ * have failed, so report the useful codec/negotiation reason when one exists.
  */
-function mediaUnreachable(): string {
+function compatiblePreviewFailed(directFailure: unknown, codec: string): string {
+  const codecReason = directFailure instanceof Error ? directFailure.message : codecComplaint(codec);
+  if (codecReason) return `${codecReason} The compatible HTTPS preview could not play it either.`;
   return (
-    "The stream was set up but no video arrived. This browser could not reach " +
-    "the video port (UDP 8189) on the preview server - it does not go through " +
-    "the web proxy, so it has to be open separately."
+    "Neither the direct low-latency connection nor the compatible HTTPS preview " +
+    "could receive video from this camera."
   );
 }
 

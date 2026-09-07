@@ -11,8 +11,10 @@ COPY . .
 # inputs, so they are declared here, defaulting to the compose service names.
 ARG API_ORIGIN=http://api:8000
 ARG MEDIAMTX_ORIGIN=http://mediamtx:8889
+ARG MEDIAMTX_HLS_ORIGIN=http://mediamtx:8888
 ENV API_ORIGIN=$API_ORIGIN
 ENV MEDIAMTX_ORIGIN=$MEDIAMTX_ORIGIN
+ENV MEDIAMTX_HLS_ORIGIN=$MEDIAMTX_HLS_ORIGIN
 RUN npm run build
 
 FROM node:22-alpine AS runtime

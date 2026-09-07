@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.auth import current_principal
+from app.api.auth import current_principal, require_write
 from app.api.deps import load_recording
 from app.api.schemas import (
     AdmissionOut,
@@ -65,7 +65,7 @@ async def list_recordings(
 async def start_recording(
     body: RecordingCreate,
     db: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(current_principal),
+    principal: Principal = Depends(require_write),
 ) -> list[RecordingOut]:
     cfg = settings()
     if len(body.camera_ids) > cfg.max_streams_per_user:
@@ -237,7 +237,14 @@ IN_FLIGHT = (
 )
 
 
-@router.delete("/recordings/{recording_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/recordings/{recording_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    # On the decorator rather than in the signature so it runs before
+    # load_recording. An account that may not delete anything should be told
+    # so without the server first revealing whether that id exists.
+    dependencies=[Depends(require_write)],
+)
 async def delete_recording(
     recording: Recording = Depends(load_recording),
     db: AsyncSession = Depends(get_session),

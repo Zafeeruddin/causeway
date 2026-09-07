@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api.auth import hash_password
+from app.api.routes.auth import throttle
 from app.db import get_session
 from app.enums import Role
 from app.main import create_app
@@ -247,15 +248,24 @@ async def seeded(sessions):
             password_hash=hash_password("viewer-password"),
             role=Role.VIEWER,
         )
+        # Same team and same cameras as ``viewer``, one tier lower. The pair
+        # exists so "a viewer may, a demo account may not" is one assertion.
+        demo = User(
+            email="demo@example.com",
+            display_name="Demo",
+            password_hash=hash_password("demo-password"),
+            role=Role.DEMO,
+        )
         acme = Team(name="ACME", slug="acme")
         ops = Team(name="Ops", slug="ops")
-        db.add_all([admin, member, other, viewer, acme, ops])
+        db.add_all([admin, member, other, viewer, demo, acme, ops])
         await db.flush()
         db.add_all(
             [
                 TeamMember(team_id=acme.id, user_id=member.id),
                 TeamMember(team_id=ops.id, user_id=other.id),
                 TeamMember(team_id=acme.id, user_id=viewer.id),
+                TeamMember(team_id=acme.id, user_id=demo.id),
             ]
         )
         await db.commit()
@@ -264,6 +274,7 @@ async def seeded(sessions):
             "member": member.id,
             "other": other.id,
             "viewer": viewer.id,
+            "demo": demo.id,
             "acme": acme.id,
             "ops": ops.id,
         }
@@ -302,8 +313,30 @@ async def as_viewer(client, seeded):
 
 
 @pytest_asyncio.fixture
+async def as_demo(client, seeded):
+    """In ACME, like ``as_viewer``, and allowed to change nothing at all."""
+    await client.post(
+        "/api/auth/login", json={"email": "demo@example.com", "password": "demo-password"}
+    )
+    return client
+
+
+@pytest_asyncio.fixture
 async def as_other(client, seeded):
     await client.post(
         "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
     )
     return client
+
+
+@pytest.fixture(autouse=True)
+def _fresh_throttle():
+    """Sign-in limits are per process, and the whole suite shares one address.
+
+    Without this, a test that deliberately fails a login spends part of the
+    window, and a later test signing in normally is rationed by it -- which
+    surfaces as an order-dependent 429 in an unrelated file.
+    """
+    throttle._hits.clear()
+    yield
+    throttle._hits.clear()
