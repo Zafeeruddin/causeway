@@ -100,6 +100,41 @@ class Agent:
 
     # ---- lifecycle -----------------------------------------------------
 
+    #: Profile states that claim a live session. A process that just started
+    #: holds none of them, whatever the rows say.
+    _SESSION_STATES = (ProfileState.UP, ProfileState.DEGRADED, ProfileState.CONNECTING)
+
+    async def _reconcile_profiles(self) -> None:
+        """Clear connections this process is recorded as holding but does not.
+
+        A VPN link, a namespace and an SSH master live in the agent's memory and
+        die with it, but the row saying so outlives the restart. What is left is
+        a dashboard showing a healthy connection over an estate where nothing
+        resolves, and the one action that would fix it -- Connect -- is the one
+        the UI hides while it believes the profile is already up.
+
+        Marking them idle at startup makes the first screen after a restart tell
+        the truth. It is deliberately a blind write rather than a redial: which
+        profiles should be up is the operator's call, and reconnecting thousands
+        of cameras' worth of tunnels because a container restarted is not a
+        decision to make on their behalf.
+        """
+        async with self._sessions() as db:
+            result = await db.execute(
+                update(ConnectionProfile)
+                .where(ConnectionProfile.state.in_(self._SESSION_STATES))
+                .values(
+                    state=ProfileState.IDLE,
+                    state_detail="not connected - the agent restarted",
+                    tunnel_ip=None,
+                    namespace=None,
+                )
+            )
+            await db.commit()
+        cleared = cast(CursorResult[Any], result).rowcount
+        if cleared:
+            log.info("agent.profiles_reconciled", cleared=cleared)
+
     async def run(self) -> None:
         cfg = settings()
         log.info(
@@ -108,6 +143,7 @@ class Agent:
             work_dir=cfg.work_dir,
             netns_available=self.connections.netns.available,
         )
+        await self._reconcile_profiles()
         loops = [
             asyncio.create_task(self._claim_loop(), name="claim"),
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),

@@ -35,10 +35,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.enums import SourceKind
+from app.gates.probes import stream_probe
 from app.models import Camera, CameraSource
 from app.recorder.accel import AtCapacity, TranscodeBudget
 from app.recorder.ffmpeg import needs_transcode, publish_argv
-from app.recorder.session import SourcePath
+from app.recorder.session import OpenPath, SourcePath
 from app.services.connections import ConnectionService
 from app.services.mediamtx import MediaMtx, MediaMtxError
 from app.services.paths import PathUnavailable, ProfileSourcePath
@@ -189,6 +190,41 @@ class PreviewManager:
         finally:
             self._starting.pop(key, None)
 
+    async def _probe_codec(self, opened: OpenPath, source: CameraSource) -> str:
+        """Read what this source actually sends, and remember it.
+
+        The write is what keeps this cheap: the codec of a camera does not
+        change between viewers, so the second person to open it reads the answer
+        instead of paying for it again. Testing a source writes the same column,
+        so a camera tested from the UI never reaches here at all.
+
+        A probe that fails leaves the column empty and the caller copying, which
+        is the old behaviour on purpose: if the handshake did not work here, the
+        publisher is about to fail too, and ``_await_ready`` says so with the
+        stream's own error rather than a guess made up here.
+        """
+        try:
+            info = await stream_probe(
+                opened.runner, opened.url, rtsp=SourceKind(source.kind) is SourceKind.RTSP
+            )
+        except Exception as exc:
+            # Never the reason a preview does not start. Whatever stopped the
+            # probe is about to stop the publisher too, and that error names the
+            # actual layer that failed instead of this one.
+            log.info("preview.probe_error", source=source.id, error=str(exc))
+            return ""
+        if not info.ok or not info.codec:
+            log.info("preview.probe_failed", source=source.id, detail=info.detail)
+            return ""
+        source.codec = info.codec
+        async with self._sessions() as db:
+            row = await db.get(CameraSource, source.id)
+            if row is not None:
+                row.codec = info.codec
+                await db.commit()
+        log.info("preview.probed", source=source.id, codec=info.codec)
+        return info.codec
+
     async def _start_one(self, camera: Camera, source: CameraSource, user_id: str) -> PreviewInfo:
         cfg = settings()
         path = self._path_factory(camera, source)
@@ -207,7 +243,18 @@ class PreviewManager:
         # The probe already recorded what this camera sends, so the decision is
         # made before ffmpeg starts rather than discovered by a browser that
         # negotiates, agrees on nothing, and shows black.
-        transcode = needs_transcode(source.codec or "")
+        #
+        # A source nobody has tested yet has no codec, and treating that as
+        # "probably fine" is the same black screen by another route: an estate
+        # bulk-imported from a CSV has thousands of them, and on this hardware
+        # they are H.265 to a browser that cannot decode it. Probing costs a few
+        # seconds once -- the answer is written back, so only the first viewer
+        # of each source pays it -- and it is the difference between video and a
+        # refusal nobody can act on.
+        codec = source.codec or ""
+        if not codec:
+            codec = await self._probe_codec(opened, source)
+        transcode = needs_transcode(codec)
         if transcode:
             # Before the process exists, so a machine at capacity says so
             # instead of starting a sixteenth encoder and making the fifteen
