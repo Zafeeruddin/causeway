@@ -39,7 +39,22 @@ webrtcIPsFromInterfaces: no
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
-hlsAlwaysRemux: no
+# Build the HLS rendition from the moment a stream is published, rather than
+# when the first HLS viewer asks for it.
+#
+# On demand is the wrong shape for a fallback. The browser spends its first
+# seven seconds trying WebRTC and only then asks for HLS, which creates the
+# muxer right at that instant -- so the playlist it gets back holds a single
+# segment. The player loads that one, reloads the playlist waiting for a second
+# that is still being cut, and the media element gives up. Opening the same
+# camera again worked, because the muxer from the failed attempt was still
+# there with a full window behind it; that is the "fails once, then plays" this
+# fixes. Measured at the moment of fallback: one segment cold, fifteen warm.
+#
+# The cost is repackaging every previewed stream into HLS even for viewers who
+# stay on WebRTC. That is a remux and not a re-encode -- the transcode, where
+# one happens, has already been paid upstream of this.
+hlsAlwaysRemux: yes
 # The default seven-segment window is sized for a viewer on the same network as
 # the server. This one is the fallback for the opposite case -- anyone whose ICE
 # is blocked, which in practice means a long and uneven round trip -- and a
