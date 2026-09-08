@@ -47,22 +47,37 @@ export async function openHls(
       queueMicrotask(lost);
       return session();
     }
+    // Tuned for the network this path exists to serve. Everyone whose ICE
+    // works stays on WebRTC and never gets here, so the viewers who do are the
+    // ones on CGNAT, a corporate egress, or a phone -- high latency, and the
+    // last people who should be pinned to the live edge.
+    //
+    // At liveSyncDurationCount: 1 the player starts on the newest segment in a
+    // seven-segment window. A round trip long enough for one more segment to
+    // roll means asking for one MediaMTX has already evicted, which is a 404
+    // and a fatal network error. Starting three back costs about two seconds of
+    // latency and puts a whole window between the player and the eviction edge.
     hls = new Hls({
       lowLatencyMode: true,
       backBufferLength: 30,
-      liveSyncDurationCount: 1,
-      liveMaxLatencyDurationCount: 3,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
       maxLiveSyncPlaybackRate: 1.5,
     });
     hls.on(Events.MEDIA_ATTACHED, () => hls?.loadSource(url));
     hls.on(Events.MANIFEST_PARSED, play);
     hls.on(Events.ERROR, (_event, data) => {
       if (!data.fatal || closed || !hls) return;
-      if (data.type === ErrorTypes.NETWORK_ERROR && networkRecoveries++ < 1) {
+      // One retry is not enough on a live edge. A segment expiring under a slow
+      // client is transient by nature -- the next playlist has newer ones -- and
+      // giving up after a single 404 is what made a preview fail on the first
+      // open and play on the second, when the stream had been running long
+      // enough to have a settled window.
+      if (data.type === ErrorTypes.NETWORK_ERROR && networkRecoveries++ < 4) {
         hls.startLoad();
         return;
       }
-      if (data.type === ErrorTypes.MEDIA_ERROR && mediaRecoveries++ < 1) {
+      if (data.type === ErrorTypes.MEDIA_ERROR && mediaRecoveries++ < 2) {
         hls.recoverMediaError();
         return;
       }

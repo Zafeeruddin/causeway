@@ -40,6 +40,13 @@ hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
 hlsAlwaysRemux: no
+# The default seven-segment window is sized for a viewer on the same network as
+# the server. This one is the fallback for the opposite case -- anyone whose ICE
+# is blocked, which in practice means a long and uneven round trip -- and a
+# segment evicted between the playlist that advertised it and the request for it
+# is a 404 the player reads as a dead stream. Fifteen is still only a few
+# seconds of buffer and costs a little memory per live preview.
+hlsSegmentCount: 15
 
 rtmp: no
 srt: no
