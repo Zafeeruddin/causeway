@@ -162,6 +162,22 @@ class ConnectionService:
 
     async def connect(self, db: AsyncSession, profile: ConnectionProfile) -> ConnectOutcome:
         attempt_id = str(uuid.uuid4())
+
+        # Connecting a profile this process is already holding has to tear the
+        # old one down first. ``netns.ensure`` is idempotent and hands back the
+        # namespace that exists, but nothing below it is: the dial runs again
+        # and lands a second ppp interface in that same namespace, with its own
+        # copy of every route. The kernel then picks one of two identical routes
+        # per destination, half of them through a tunnel nobody is reading, and
+        # the cameras behind it go dark while the profile still reads "up".
+        #
+        # Reconnecting after an agent restart is the ordinary way to get here:
+        # the state says up, the session behind it is gone, and the person does
+        # the obvious thing and presses Connect.
+        if profile.id in self.live_profile_ids:
+            log.info("connect.replacing_session", profile=profile.id)
+            await self.disconnect(db, profile)
+
         await self._set_state(db, profile, ProfileState.CONNECTING, "walking the gates")
 
         try:

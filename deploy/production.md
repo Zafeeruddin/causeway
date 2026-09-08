@@ -339,6 +339,43 @@ docker compose exec api cam set-password you@example.com   # last resort
 Set `SMTP_HOST` and `SMTP_FROM` and the self-service "forgotten your password"
 form starts working as well. There is no second switch.
 
+## 5b. Every time you redeploy
+
+Replacing the `agent` container is not a restart of a stateless service. The VPN
+link, the network namespace and the SSH master to the jump host live in that
+process and die with it, so a deploy that touches `agent` takes every camera
+behind a tunnel offline until somebody reconnects the profile. Nothing in the
+stack does that for you: which profiles should be up is an operator's decision,
+not something to infer from a container starting.
+
+So a redeploy that includes `agent` has a hand-over list, and it is short:
+
+1. **Check nothing is recording first.** `curl -s localhost:8000/api/health` and
+   read `agent.recordings`. A recording interrupted mid-upload strands its
+   segments; `stop_grace_period` covers a clean stop, not a surprise one.
+2. **Reconnect each connection profile** from the Connections page once the new
+   agent is up. Profiles come back as `idle` with "not connected - the agent
+   restarted", which is the truth rather than a stale `up`.
+3. **Open one camera preview** on a profile you just reconnected. It is the only
+   check that exercises the whole path -- tunnel, forward, publisher, and the
+   browser's media leg -- and the first two steps can both look fine while it
+   fails.
+4. **Confirm the fallback if this host has no inbound UDP.** With 8189/udp shut,
+   preview must still play over HLS on 443. If it does not, `MEDIAMTX_HLS_ORIGIN`
+   is not reaching MediaMTX and viewers behind NAT see "preview refused".
+
+Rolling back is a retag and a recreate, so take a database dump before the
+deploy and tag the images you are replacing:
+
+```bash
+docker compose -f compose.prod.yml exec -T postgres \
+  pg_dump -U cam -d cam -Fc > predeploy-$(date +%Y%m%d).dump
+for n in api agent web; do
+  docker tag registry.example.com/causeway/causeway-$n:latest \
+             registry.example.com/causeway/causeway-$n:rollback
+done
+```
+
 ## 6. After it is up
 
 - **Log in to the registry** so updates can be pulled: `docker login registry.example.com`.

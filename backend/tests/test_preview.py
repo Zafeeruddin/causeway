@@ -8,6 +8,7 @@ it fails.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from app.config import settings
 from app.enums import ReachMode, SourceKind
 from app.models import Camera, CameraSource, ConnectionProfile, Team
+from app.net.runner import ProcResult
 from app.recorder.accel import Accel, Capacity, TranscodeBudget
 from app.recorder.session import OpenPath
 from app.security.redaction import StreamUrl
@@ -27,11 +29,17 @@ RTSP = StreamUrl.build("rtsp://10.0.0.42:554/stream1", "admin", "hunter2")
 class ScriptedPath:
     """A camera that is already reachable, with a runner that records argv."""
 
-    def __init__(self, kind: SourceKind = SourceKind.RTSP, process: FakeProcess | None = None):
+    def __init__(
+        self,
+        kind: SourceKind = SourceKind.RTSP,
+        process: FakeProcess | None = None,
+        probes_as: str | None = None,
+    ):
         self.kind = kind
         self.source_id = "src-1"
         self.process = process or FakeProcess()
         self.spawned: list[list[str]] = []
+        self.probed = 0
         self.opened = 0
         outer = self
 
@@ -42,8 +50,17 @@ class ScriptedPath:
             def wrap(self, argv):
                 return list(argv)
 
-            async def run(self, argv, **kwargs):  # pragma: no cover - unused
-                raise NotImplementedError
+            async def run(self, argv, **kwargs):
+                # Only the codec probe reaches here. A path built without
+                # ``probes_as`` stands for a camera ffprobe cannot read, which is
+                # what every test that does not care about the codec wants.
+                outer.probed += 1
+                if probes_as is None:
+                    raise NotImplementedError
+                payload = json.dumps(
+                    {"streams": [{"codec_type": "video", "codec_name": probes_as}]}
+                )
+                return ProcResult(returncode=0, stdout=payload, stderr="")
 
             async def spawn(self, argv, **kwargs):
                 outer.spawned.append(list(argv))
@@ -369,9 +386,55 @@ async def test_a_copy_costs_nothing_against_the_budget(sessions, camera, publish
 
 
 async def test_an_unprobed_source_is_copied_rather_than_guessed_at(sessions, camera, publishable):
-    """Spending a core on a stream that would have played is worse than the
-    player saying it cannot decode this one."""
+    """When the probe cannot say what this is, copying beats guessing.
+
+    Spending a core on a stream that would have played is worse than the player
+    saying it cannot decode this one -- and whatever stopped the probe is about
+    to stop the publisher, which reports the real failure."""
     path = ScriptedPath()
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        await previews.start(db, camera, "user-1")
+
+    assert "-c copy" in " ".join(path.spawned[0])
+
+
+async def test_an_unprobed_source_is_probed_before_it_is_copied(sessions, camera, publishable):
+    """A source with no stored codec is the normal case for a bulk import, and
+    assuming those are browser-safe hands thousands of cameras a black frame.
+
+    The estate this was found on was H.265 throughout: every camera imported from
+    a CSV had an empty codec, so every preview copied H.265 into WebRTC and the
+    browser refused all of them."""
+    path = ScriptedPath(probes_as="hevc")
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        await previews.start(db, camera, "user-1")
+
+    assert path.probed == 1
+    assert "-c copy" not in " ".join(path.spawned[0])
+
+
+async def test_a_probed_codec_is_written_back_so_only_the_first_viewer_pays(
+    sessions, camera, publishable
+):
+    """The codec of a camera does not change between viewers, so the second
+    person to open it reads the answer instead of paying for it again."""
+    path = ScriptedPath(probes_as="hevc")
+    previews = build(sessions, path, FakeMediaMtx())
+    async with sessions() as db:
+        await previews.start(db, camera, "user-1")
+
+    rtsp = next(s for s in camera.sources if SourceKind(s.kind) is SourceKind.RTSP)
+    async with sessions() as db:
+        stored = await db.get(CameraSource, rtsp.id)
+        assert stored is not None and stored.codec == "hevc"
+
+
+async def test_a_source_that_probes_as_browser_safe_is_still_copied(sessions, camera, publishable):
+    """Probing is there to catch the undeliverable ones, not to re-encode
+    everything that arrives."""
+    path = ScriptedPath(probes_as="h264")
     previews = build(sessions, path, FakeMediaMtx())
     async with sessions() as db:
         await previews.start(db, camera, "user-1")

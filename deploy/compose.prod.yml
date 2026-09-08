@@ -85,6 +85,16 @@ services:
   web:
     image: registry.example.com/causeway/causeway-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Where this service's own rewrites send /api, /rtc and /hls. The defaults
+    # are localhost, which is correct for a dev run and wrong in every way here:
+    # localhost inside this container is this container. nginx hides two of them
+    # by proxying /api and /rtc itself, so the one nobody routes -- /hls -- is
+    # the one that breaks, and it breaks as "preview refused" on exactly the
+    # networks that need the fallback rather than anywhere it would be noticed.
+    environment:
+      API_ORIGIN: http://api:8000
+      MEDIAMTX_ORIGIN: http://mediamtx:8889
+      MEDIAMTX_HLS_ORIGIN: http://mediamtx:8888
     depends_on: [api]
     ports: ["${WEB_BIND:-127.0.0.1:3000}:3000"]
     networks: [control]
