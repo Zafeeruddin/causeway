@@ -398,3 +398,77 @@ class _FakeNamespace:
     @property
     def runner(self):
         return self._runner
+
+
+async def test_disconnecting_drops_the_leases_its_sources_were_holding(sessions):
+    """A lease outliving the master it was bound on is a port nothing answers.
+
+    ``TunnelManager.forward`` hands back a cached lease for a source without
+    checking that the SSH master or the namespace behind it still exists. A
+    reconnect tears down both, so a lease that survives sends the next preview
+    to a dead loopback port -- "Connection refused", about a tunnel the
+    dashboard is reporting as up, and every retry gets the same lease back.
+    """
+    from app.enums import ReachMode, SourceKind, VpnKind
+    from app.models import Camera, CameraSource, ConnectionProfile, Team
+    from app.net.netns import Namespace
+    from app.security.secrets import MemoryBackend
+    from app.services.connections import ConnectionService
+    from app.services.events import NullBus
+
+    inside = FakeRunner(default=ProcResult(0, "open\n", ""))
+
+    class QuietTunnels(TunnelManager):
+        async def open_master(self, jump, runner, *, timeout=25.0):
+            return None
+
+        async def close_master(self, jump, runner):
+            return None
+
+    class StubNetns(NetnsManager):
+        async def ensure(self, profile_id: str) -> Namespace:
+            return _FakeNamespace(inside)
+
+        async def destroy(self, profile_id: str) -> None:
+            return None
+
+    service = ConnectionService(
+        netns=StubNetns(prefix="cam"),
+        tunnels=QuietTunnels(control_dir="/tmp/cam-test-ctl"),
+        secrets=MemoryBackend(),
+        bus=NullBus(),
+    )
+
+    async with sessions() as db:
+        team = Team(name="ACME", slug="acme")
+        db.add(team)
+        await db.flush()
+        profile = ConnectionProfile(
+            team_id=team.id,
+            name="ACME via the VM",
+            mode=ReachMode.VPN_JUMP,
+            vpn_kind=VpnKind.NONE,
+            jump_host="10.20.30.71",
+            jump_username="ops",
+        )
+        db.add(profile)
+        await db.flush()
+        camera = Camera(team_id=team.id, profile_id=profile.id, name="Gate 1")
+        db.add(camera)
+        await db.flush()
+        source = CameraSource(
+            camera_id=camera.id, kind=SourceKind.RTSP, url="rtsp://10.244.1.5:554/s1"
+        )
+        db.add(source)
+        await db.flush()
+
+        held = await service.tunnels.pool.lease(source.id, "10.244.1.5:554")
+        assert service.tunnels.pool.get(source.id) is not None
+
+        await service.disconnect(db, profile)
+
+        assert service.tunnels.pool.get(source.id) is None, (
+            "the lease survived the master it was bound on"
+        )
+        # And the port is free for the next source that asks.
+        assert (await service.tunnels.pool.lease("other", "x:1")).port == held.port

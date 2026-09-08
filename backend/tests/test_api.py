@@ -437,14 +437,10 @@ async def test_cameras_can_be_searched_and_paginated(as_member, seeded, direct_p
     assert first["page"] == 1
     assert [camera["name"] for camera in first["items"]] == ["Alpha lobby", "Bravo dock"]
 
-    second = (
-        await as_member.get("/api/cameras/page", params={"page": 2, "page_size": 2})
-    ).json()
+    second = (await as_member.get("/api/cameras/page", params={"page": 2, "page_size": 2})).json()
     assert [camera["name"] for camera in second["items"]] == ["Zulu gate"]
 
-    by_address = (
-        await as_member.get("/api/cameras/page", params={"q": "10.20.30.52"})
-    ).json()
+    by_address = (await as_member.get("/api/cameras/page", params={"q": "10.20.30.52"})).json()
     assert by_address["total"] == 1
     assert by_address["items"][0]["ref"] == "CAM-002"
 

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import GateStatus, ProfileState, ReachMode, SourceKind, SshAuth, VpnKind
@@ -291,11 +292,32 @@ class ConnectionService:
                 # closed from there -- and before the namespace goes away.
                 await self.tunnels.close_master(spec.jump, self._known_runner(profile))
         self._runners.pop(profile.id, None)
+        await self._release_source_leases(db, profile)
         if profile.reach_mode.has_vpn:
             await self.netns.destroy(profile.id)
         profile.tunnel_ip = None
         profile.namespace = None
         await self._set_state(db, profile, ProfileState.IDLE, "disconnected")
+
+    async def _release_source_leases(self, db: AsyncSession, profile: ConnectionProfile) -> None:
+        """Drop the port leases this profile's sources are holding.
+
+        A lease means "port N on the loopback of that namespace, bound on that
+        SSH master", and disconnecting takes both away. ``tunnels.forward``
+        hands back a cached lease for a source without checking that either
+        still exists, so one that outlives them sends the next recorder or
+        preview to a port nothing is listening on. That surfaces as ffmpeg
+        saying "Connection refused" about a tunnel the dashboard is reporting
+        as up, and it never recovers on its own, because every retry gets the
+        same dead lease back.
+        """
+        rows = await db.execute(
+            select(CameraSource.id)
+            .join(Camera, CameraSource.camera_id == Camera.id)
+            .where(Camera.profile_id == profile.id)
+        )
+        for source_id in rows.scalars():
+            await self.tunnels.pool.release_owner(source_id)
 
     def _known_runner(self, profile: ConnectionProfile) -> Runner:
         """The runner this profile was connected with, without creating anything.
