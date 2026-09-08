@@ -244,10 +244,27 @@ server {
         proxy_read_timeout 3600s;
     }
 
-    # WHEP signalling. Direct media uses UDP 8189; compatible media is proxied
-    # internally by the web service at /hls/ over the same HTTPS origin.
+    # WHEP signalling. Direct media uses UDP 8189.
     location /rtc/ {
         proxy_pass http://127.0.0.1:8889/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # The compatible fallback, for viewers whose network drops UDP 8189 -- CGNAT,
+    # corporate egress, most mobile carriers, and any host whose inbound 8189 is
+    # not forwarded. Without this block those viewers get "preview refused" and
+    # no reason for it.
+    #
+    # proxy_redirect is the whole point of serving this here rather than letting
+    # the web service rewrite it. MediaMTX answers the first playlist request
+    # with a 302 to /<path>/index.m3u8?cookieCheck=1, an absolute path relative
+    # to its own root, and a browser that follows it leaves /hls/ and 404s. This
+    # puts the prefix back. A Next rewrite cannot: it proxies the body, not the
+    # response headers.
+    location /hls/ {
+        proxy_pass http://127.0.0.1:8888/;
+        proxy_redirect / /hls/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
     }

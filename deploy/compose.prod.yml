@@ -61,6 +61,15 @@ services:
       # Direct low-latency video. Publish/forward it when possible; viewers on
       # networks that block it automatically fall back to HLS over HTTPS 443.
       - "${MEDIA_BIND:-8189}:8189/udp"
+      # The HLS rendition behind that fallback, for nginx to proxy. Loopback.
+      #
+      # It has to be nginx and not this app's own /hls rewrite: MediaMTX answers
+      # the first playlist request with a 302 to /<path>/index.m3u8?cookieCheck=1
+      # -- an absolute path, relative to its own root. Proxied under a prefix
+      # that Location does not know about, the browser follows it out of /hls/
+      # and lands on a route the dashboard does not serve. nginx fixes it with
+      # one proxy_redirect; a rewrite cannot touch a response header at all.
+      - "${HLS_BIND:-127.0.0.1:8888}:8888"
       #
       # RTSP ingest (8554) and the control API (9997) are deliberately NOT
       # published. The agent reaches them as `mediamtx:8554` and `mediamtx:9997`
