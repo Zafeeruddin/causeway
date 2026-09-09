@@ -355,10 +355,38 @@ class ConnectionService:
             await self._set_state(db, profile, ProfileState.DEGRADED, detail)
 
     async def health(self, profile: ConnectionProfile) -> bool:
+        """Whether this process can still reach cameras on this profile.
+
+        Every hop has to be asked, not just the first. A VPN that is still up
+        says nothing about the SSH master riding on it, and that master is the
+        hop that dies quietly: ServerAliveInterval gives it about forty-five
+        seconds of silence before it exits, which any brief network fault to the
+        jump host will spend. Its control socket goes with it.
+
+        Reporting healthy at that point is what turns a blip into an outage.
+        ``SourcePath.open`` redials only when this returns False, so every
+        recording and preview instead went to ``ssh -O forward`` on a socket
+        that was no longer there -- "could not forward ...: No such file or
+        directory", reported to the operator as "the SSH connection is up but
+        the port forward could not be opened", from a profile the dashboard
+        showed as up. It stayed that way until somebody reconnected it by hand.
+        """
         driver = self._drivers.get(profile.id)
         if driver is None:
             return False
-        return (await driver.health()).up
+        if not (await driver.health()).up:
+            return False
+        if not profile.reach_mode.has_jump:
+            return True
+        spec = await self.build_spec(profile)
+        if spec.jump is None:
+            return True
+        # _known_runner rather than runner_for: this is a question, and building
+        # the namespace back to ask it would answer itself.
+        alive = await self.tunnels.master_alive(spec.jump, self._known_runner(profile))
+        if not alive:
+            log.info("health.master_gone", profile=profile.id, host=spec.jump.host)
+        return alive
 
     # ---- persistence and events ----------------------------------------
 
