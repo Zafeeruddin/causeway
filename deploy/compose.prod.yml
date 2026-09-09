@@ -138,6 +138,13 @@ services:
     security_opt: [apparmor:unconfined]
     devices: ["/dev/ppp:/dev/ppp"]
     sysctls: {net.ipv4.ip_forward: 1}
+    # Network namespace handles are runtime mount points, not persistent data.
+    # Keeping /run/netns in the container's writable layer leaves dead files
+    # behind after a host reboot: Docker restarts the same container, while the
+    # kernel mounts the files referred to are gone, and the next `ip netns add`
+    # fails with "File exists". A tmpfs is recreated empty on every start.
+    tmpfs:
+      - /run/netns
     volumes:
       - work:/var/lib/cam/work
       - ctl:/run/cam/ctl
