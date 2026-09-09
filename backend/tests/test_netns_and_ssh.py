@@ -472,3 +472,70 @@ async def test_disconnecting_drops_the_leases_its_sources_were_holding(sessions)
         )
         # And the port is free for the next source that asks.
         assert (await service.tunnels.pool.lease("other", "x:1")).port == held.port
+
+
+async def test_a_dead_ssh_master_is_not_reported_healthy(sessions):
+    """A live VPN says nothing about the SSH master riding on it.
+
+    The master exits after roughly forty-five seconds of silence, which any
+    brief fault to the jump host will spend, and its control socket goes with
+    it. Reporting healthy there is what turns a blip into an outage: the redial
+    in SourcePath.open never fires, and every recording and preview goes to
+    ``ssh -O forward`` on a socket that is not there any more.
+    """
+    from app.enums import ReachMode, VpnKind
+    from app.models import ConnectionProfile, Team
+    from app.net.vpn.base import VpnDriver, VpnStatus
+    from app.security.secrets import MemoryBackend
+    from app.services.connections import ConnectionService
+    from app.services.events import NullBus
+
+    class UpVpn(VpnDriver):
+        """A VPN that is and stays up, so health() turns on the hop above it."""
+
+        async def dial(self, *a, **k):
+            return None
+
+        async def hangup(self) -> None:
+            return None
+
+        async def health(self) -> VpnStatus:
+            return VpnStatus(up=True, detail="tunnel up on ppp0")
+
+    class Tunnels(TunnelManager):
+        master_is_alive = True
+
+        async def master_alive(self, jump, runner) -> bool:
+            return self.master_is_alive
+
+    tunnels = Tunnels(control_dir="/tmp/cam-test-ctl")
+    service = ConnectionService(
+        netns=NetnsManager(prefix="cam"),
+        tunnels=tunnels,
+        secrets=MemoryBackend(),
+        bus=NullBus(),
+    )
+
+    async with sessions() as db:
+        team = Team(name="MOFA", slug="mofa")
+        db.add(team)
+        await db.flush()
+        profile = ConnectionProfile(
+            team_id=team.id,
+            name="MOFA via the VM",
+            mode=ReachMode.VPN_JUMP,
+            vpn_kind=VpnKind.NONE,
+            jump_host="10.20.30.71",
+            jump_username="ops",
+        )
+        db.add(profile)
+        await db.flush()
+
+        service._drivers[profile.id] = UpVpn(LocalRunner())
+
+        assert await service.health(profile) is True
+
+        tunnels.master_is_alive = False
+        assert await service.health(profile) is False, (
+            "a dead SSH master was reported as a healthy connection"
+        )
