@@ -8,6 +8,7 @@ import { useLive } from "@/lib/useLive";
 import { administers, writes, type Me } from "@/lib/types";
 import { VERSION } from "@/lib/version";
 import { Button, Dot, cx } from "@/components/ui";
+import { ServiceGate } from "@/components/ServiceGate";
 
 /**
  * What each role is shown.
@@ -30,7 +31,7 @@ const VIEWER_NAV = [
   { href: "/recordings", label: "Recordings" },
 ];
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [me, setMe] = useState<Me | null>(null);
@@ -140,5 +141,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       <main className="mx-auto max-w-7xl px-6 py-8">{children}</main>
     </div>
+  );
+}
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  // In front of the shell, not inside it: nothing the shell starts -- the
+  // session check, the live socket, every page's requests -- is worth opening
+  // against a deployment that has nowhere to put what it records.
+  return (
+    <ServiceGate>
+      <DashboardShell>{children}</DashboardShell>
+    </ServiceGate>
   );
 }

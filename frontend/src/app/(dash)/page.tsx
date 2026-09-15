@@ -32,12 +32,14 @@ export default function OverviewPage() {
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
+  const [storageHost, setStorageHost] = useState("");
 
   const load = useCallback(() => {
     api.profiles().then(setProfiles).catch(() => {});
     api.cameras().then(setCameras).catch(() => {});
     api.recordings().then(setRecordings).catch(() => {});
     api.storage().then(setUsage).catch(() => {});
+    api.health().then((h) => setStorageHost(h.storage?.endpoint ?? "")).catch(() => {});
   }, []);
 
   useEffect(load, [load]);
@@ -140,7 +142,10 @@ export default function OverviewPage() {
 
         <div className="flex flex-col gap-6">
           <Card>
-            <CardHeader title="Storage" sub="Versity · s3.example.com" />
+            <CardHeader
+              title="Storage"
+              sub={storageHost ? `Object storage · ${storageHost}` : "Object storage"}
+            />
             <div className="px-5 py-4">
               {usage ? (
                 <StorageMeter usage={usage} />

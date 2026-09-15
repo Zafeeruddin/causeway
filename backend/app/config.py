@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     #: Versity serves path-style URLs. Virtual-host style resolves
     #: <bucket>.s3.example.com, which does not exist.
     s3_addressing_style: str = "path"
+    #: Ask the object store whether it is usable when the dashboard loads, and
+    #: put a "service unavailable" screen in front of it when not. Off for a
+    #: deployment with no store, or one whose product does not answer
+    #: HeadBucket. See app/storage/health.py.
+    storage_health_check: bool = True
+    #: One answer serves every caller for this long.
+    storage_health_ttl_seconds: float = 15.0
+    #: No answer within this and the store is reported unavailable.
+    storage_health_timeout_seconds: float = 5.0
 
     storage_warn_bytes: int = 60 * 1024**3
     storage_gc_bytes: int = 90 * 1024**3

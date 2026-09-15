@@ -67,7 +67,13 @@ class ObjectStore:
         secret_key: str | None = None,
         region: str | None = None,
         addressing_style: str | None = None,
+        connect_timeout: float = 10,
+        read_timeout: float = 120,
+        retries: dict[str, object] | None = None,
     ) -> None:
+        # The defaults are sized for moving recordings. A caller asking a
+        # question rather than uploading -- the health probe -- passes its own,
+        # because a loading screen cannot wait two minutes to hear no.
         cfg = settings()
         self.bucket = bucket or cfg.s3_bucket
         self.endpoint_url = endpoint_url or cfg.s3_endpoint_url
@@ -82,9 +88,9 @@ class ObjectStore:
                 # hostname that does not exist.
                 s3={"addressing_style": addressing_style or cfg.s3_addressing_style},
                 signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "standard"},
-                connect_timeout=10,
-                read_timeout=120,
+                retries=retries or {"max_attempts": 3, "mode": "standard"},
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
             ),
         )
 
