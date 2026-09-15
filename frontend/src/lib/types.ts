@@ -149,6 +149,17 @@ export interface StorageUsage {
   message: string; by_team: Record<string, number>;
 }
 
+/**
+ * What the loading screen asks before anything else. Readable before sign-in,
+ * so the server sends only what a person could repeat to an administrator.
+ * ``storage`` is optional so a web build that lands before its API still loads.
+ */
+export interface Health {
+  status: "ok" | "degraded";
+  version: string;
+  storage?: { status: "ok" | "unavailable" | "disabled"; endpoint: string };
+}
+
 export interface Admission {
   allowed: boolean; reason: string; estimated_bytes: number; headroom_bytes: number;
 }

@@ -299,6 +299,12 @@ possible, the browser automatically uses the HTTPS compatibility path.
 curl -s https://cams.example.com/api/health
 ```
 
+`storage.status` should read `ok`. `unavailable` means the object store did not
+answer a HeadBucket within five seconds or refused it; the reason is in
+`docker compose logs api` as `storage.health.unavailable`, and until it clears
+every visitor sees a "service unavailable" screen naming the endpoint host
+instead of the sign-in page. `disabled` means `STORAGE_HEALTH_CHECK=false`.
+
 Three fields decide whether anything will work:
 
 | Field | Means |

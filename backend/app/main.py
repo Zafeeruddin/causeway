@@ -23,6 +23,7 @@ from app.services.connections import ConnectionService
 from app.services.events import event_bus
 from app.services.gateway import RemoteGateway, RemotePreview
 from app.services.preview import PreviewError, PreviewManager
+from app.storage.health import StorageProbe
 from app.version import __version__
 
 log = structlog.get_logger(__name__)
@@ -144,6 +145,15 @@ def create_app() -> FastAPI:
             "connect_mode": "inproc" if app.state.netns is not None else "agent",
         }
         body.update(await _network_status(app))
+        # Read before sign-in by the loading screen, which is why this carries
+        # up-or-down and a host and nothing more -- see app/storage/health.py.
+        # Still a 200 when storage is down: this is how anyone finds out which
+        # build a machine is running, and that matters most during the kind of
+        # incident that takes storage out.
+        storage = await _storage_probe(app).current()
+        body["storage"] = storage.public()
+        if storage.status == "unavailable":
+            body["status"] = "degraded"
         return JSONResponse(body)
 
     @app.get("/api/capabilities")
@@ -189,6 +199,15 @@ async def _network_status(app: FastAPI) -> dict:
         "ppp_available": bool(reported.get("ppp_available", True)),
         "agent": reported,
     }
+
+
+def _storage_probe(app: FastAPI) -> StorageProbe:
+    """Built on first use rather than at import, so importing the app reads no
+    configuration it does not need yet."""
+    probe = getattr(app.state, "storage_probe", None)
+    if probe is None:
+        probe = app.state.storage_probe = StorageProbe()
+    return probe
 
 
 app = create_app()

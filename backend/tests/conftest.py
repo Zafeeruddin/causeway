@@ -25,6 +25,7 @@ from app.security.secrets import MemoryBackend, set_secrets_backend
 from app.services.connections import ConnectionService
 from app.services.events import NullBus, set_event_bus
 from app.services.preview import PreviewManager
+from app.storage.health import StorageProbe
 
 
 def reader_for(lines: list[str]) -> asyncio.StreamReader:
@@ -181,6 +182,10 @@ async def bus():
     return b
 
 
+async def _storage_answers() -> None:
+    """A store that is always there."""
+
+
 @pytest_asyncio.fixture
 async def app(sessions, bus):
     set_secrets_backend(MemoryBackend())
@@ -211,6 +216,11 @@ async def app(sessions, bus):
         connections=application.state.gateway,
         sessions=sessions,
         mediamtx=FakeMediaMtx(),
+    )
+    # /api/health asks the object store on every call, and most tests that read
+    # it are about something else. None of them should reach a network for it.
+    application.state.storage_probe = StorageProbe(
+        check=_storage_answers, endpoint="storage.test", enabled=True
     )
     return application
 

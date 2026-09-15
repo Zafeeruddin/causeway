@@ -62,6 +62,16 @@ VPN advertising `10.0.0.0/8` collides with a storage host at `10.x.x.x` in a way
 that looks like a storage outage rather than a routing one. Recorders write
 segments to the shared work volume; a shipper outside the namespaces uploads.
 
+If the gateway stops answering, the dashboard says so before anything else
+loads. `/api/health` asks it with a HeadBucket -- one attempt, five seconds at
+most, and one answer shared by every caller for fifteen seconds -- and an
+unavailable answer puts a "service unavailable" screen in front of sign-in and
+the dashboard, naming the endpoint host so whoever sees it can pass that on.
+The screen checks again on its own and clears when the gateway is back. The
+public answer is only up or down and the host; the reason, including a missing
+bucket or a refused credential, is in the API log as
+`storage.health.unavailable`. `STORAGE_HEALTH_CHECK=false` turns it off.
+
 ## What Versity does not give us
 
 Two server-side safety nets that MinIO and AWS both have are absent here, and

@@ -7,7 +7,7 @@
  */
 
 import type {
-  Admission, Camera, CameraPage, Comparison, ConnectResponse, DownloadLink, Gate, ImportResult, Me,
+  Admission, Camera, CameraPage, Comparison, ConnectResponse, DownloadLink, Gate, Health, ImportResult, Me,
   Preview, Profile, Recording, ReachMode, ResetLink, SourceKind, SshAuth, StorageUsage, Team,
   User, VpnKind,
 } from "./types";
@@ -77,6 +77,8 @@ export const api = {
     request<Me>("/api/auth/login", { method: "POST", ...json({ email, password }) }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   me: () => request<Me>("/api/auth/me"),
+  /** Asked by the loading screen before sign-in, so it needs no session. */
+  health: () => request<Health>("/api/health"),
   /** Always accepted, whatever the address -- the server will not say whether
    *  an account exists, so neither does this. */
   forgotPassword: (email: string) =>
