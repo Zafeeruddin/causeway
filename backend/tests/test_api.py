@@ -10,7 +10,8 @@ import io
 
 import pytest
 
-from app.enums import ProfileState, ReachMode, VpnKind
+from app.enums import ProfileState, ReachMode, RecordingState, VpnKind
+from app.models import Recording
 
 pytestmark = pytest.mark.asyncio
 
@@ -784,3 +785,66 @@ async def test_creating_a_user_never_returns_a_password_hash(as_admin):
     )
     assert response.status_code == 201
     assert "password" not in response.text.lower()
+
+
+async def test_recordings_can_be_filtered_searched_and_paginated(
+    as_member, seeded, direct_profile, sessions
+):
+    """The plain list stops at ``limit`` and says nothing about having done so,
+    so the dashboard showed the first hundred rows and called that the total."""
+    gate = await _a_camera(as_member, seeded, direct_profile, name="Gate camera")
+    dock = await _a_camera(as_member, seeded, direct_profile, name="Dock camera")
+
+    made = []
+    for camera_id in (gate, gate, dock):
+        started = await as_member.post(
+            "/api/recordings", json={"camera_ids": [camera_id], "seconds": 60}
+        )
+        assert started.status_code == 202
+        made.append(started.json()[0]["id"])
+
+    # Everything is queued when it is made; the states a filter has to tell
+    # apart only happen later, once the agent has had the recording.
+    wanted = [RecordingState.COMPLETE, RecordingState.FAILED, RecordingState.RECORDING]
+    async with sessions() as db:
+        for recording_id, state in zip(made, wanted, strict=True):
+            row = await db.get(Recording, recording_id)
+            row.state = state
+        await db.commit()
+
+    everything = (await as_member.get("/api/recordings/page")).json()
+    assert everything["total"] == 3
+    # The name is joined on, so the dashboard does not fetch the whole estate.
+    assert {item["camera_name"] for item in everything["items"]} == {"Gate camera", "Dock camera"}
+
+    failed = (await as_member.get("/api/recordings/page", params={"state": "failed"})).json()
+    assert failed["total"] == 1
+
+    # "Still running" is four states, which is why the parameter repeats.
+    running = (
+        await as_member.get(
+            "/api/recordings/page",
+            params=[("state", "recording"), ("state", "queued"), ("state", "finalizing")],
+        )
+    ).json()
+    assert running["total"] == 1
+
+    by_camera = (await as_member.get("/api/recordings/page", params={"q": "Dock"})).json()
+    assert by_camera["total"] == 1
+    assert by_camera["items"][0]["camera_name"] == "Dock camera"
+
+    # total counts the whole set; items carry only the page.
+    first = (await as_member.get("/api/recordings/page", params={"page_size": 2})).json()
+    assert first["total"] == 3
+    assert first["pages"] == 2
+    assert len(first["items"]) == 2
+
+    literal_wildcard = (await as_member.get("/api/recordings/page", params={"q": "%"})).json()
+    assert literal_wildcard["total"] == 0
+
+
+async def test_a_recording_page_only_shows_your_own_teams_recordings(client, seeded):
+    await client.post(
+        "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
+    )
+    assert (await client.get("/api/recordings/page")).json()["total"] == 0

@@ -23,6 +23,15 @@ from app.services.preview import PreviewGateway
 NOT_FOUND = "Not found."
 
 
+def like_term(value: str) -> str:
+    """Make user text literal inside a LIKE pattern.
+
+    Without this a search for ``%`` matches every row rather than the rows
+    containing a percent sign, which reads as a broken filter.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def gateway(request: Request) -> ConnectionGateway:
     """In-process or in the agent, decided once at startup. See
     :mod:`app.services.gateway`."""

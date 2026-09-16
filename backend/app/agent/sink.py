@@ -126,7 +126,13 @@ class DbSink:
 
 
 def payload_for(recording: Recording) -> dict:
-    """The wire shape of a recording. Mirrors ``RecordingOut``."""
+    """The wire shape of a recording. Mirrors ``RecordingOut``.
+
+    All but ``camera_name``, which the API resolves by joining and the agent
+    would have to make an extra query for on a hot path. The dashboard keeps the
+    name already on the row instead of blanking it, and reloads when an event
+    arrives for a recording it has never seen.
+    """
     return {
         "id": recording.id,
         "team_id": recording.team_id,

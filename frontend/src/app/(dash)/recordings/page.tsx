@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, duration } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
-import { writes, type Camera, type DownloadLink, type LiveEvent, type Me, type Recording, type RecordingState } from "@/lib/types";
+import { writes, type DownloadLink, type LiveEvent, type Me, type Recording, type RecordingState } from "@/lib/types";
+import { Pagination } from "@/components/Pagination";
 import {
-  Badge, Banner, Button, Card, CardHeader, Empty, Eyebrow, Modal, type Tone,
+  Badge, Banner, Button, Card, Empty, Eyebrow, Input, Modal, type Tone,
 } from "@/components/ui";
+
+const PAGE_SIZE = 25;
 
 const TONE: Record<RecordingState, Tone> = {
   queued: "muted",
@@ -31,49 +34,121 @@ const LABEL: Record<RecordingState, string> = {
 };
 
 /** States where the agent still owns the recording; the server refuses these too. */
-const IN_FLIGHT = new Set<RecordingState>([
-  "queued",
-  "recording",
-  "recovering",
-  "finalizing",
-]);
+const IN_FLIGHT: RecordingState[] = ["queued", "recording", "recovering", "finalizing"];
+const STILL_RUNNING = new Set<RecordingState>(IN_FLIGHT);
+
+/**
+ * The filters worth a click.
+ *
+ * "Running" is four states rather than one, which is why the endpoint takes a
+ * repeated `state` parameter: nobody wants "queued" on its own.
+ */
+const FILTERS: { label: string; states: RecordingState[] }[] = [
+  { label: "All", states: [] },
+  { label: "Running", states: IN_FLIGHT },
+  { label: "Complete", states: ["complete"] },
+  { label: "Failed", states: ["failed"] },
+  { label: "Cancelled", states: ["cancelled"] },
+];
 
 export default function RecordingsPage() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
-  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("All");
+  const [loading, setLoading] = useState(true);
   const [links, setLinks] = useState<DownloadLink[] | null>(null);
   const [confirming, setConfirming] = useState<Recording | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [me, setMe] = useState<Me | null>(null);
+  const loadRequest = useRef(0);
+  const onScreen = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
-    setRecordings(await api.recordings());
+    const request = ++loadRequest.current;
+    setLoading(true);
+    try {
+      const states = FILTERS.find((option) => option.label === filter)?.states ?? [];
+      const result = await api.recordingPage(search, states, page, PAGE_SIZE);
+      // A slow first request must not overwrite a fast second one.
+      if (request !== loadRequest.current) return;
+      setRecordings(result.items);
+      setTotal(result.total);
+      setPages(result.pages);
+      // Deleting the last row of the last page leaves the person on a page that
+      // no longer exists; the server says which page it actually served.
+      if (result.page !== page) setPage(result.page);
+    } finally {
+      if (request === loadRequest.current) setLoading(false);
+    }
+  }, [filter, page, search]);
+
+  useEffect(() => {
+    load().catch((err) => {
+      setError(err instanceof ApiError ? err.message : "The recordings could not be loaded.");
+    });
+  }, [load]);
+
+  useEffect(() => {
+    api.me().then(setMe).catch(() => {});
   }, []);
 
   useEffect(() => {
-    load().catch(() => {});
-    api.cameras().then(setCameras).catch(() => {});
-    api.me().then(setMe).catch(() => {});
-  }, [load]);
+    const timer = window.setTimeout(() => {
+      setPage(1);
+      setSearch(query.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    onScreen.current = new Set(recordings.map((recording) => recording.id));
+  }, [recordings]);
 
   // Deleting a recording deletes the files. A demo account is refused by the
   // server; dropping the button keeps that from being a surprise.
   const mayDelete = me ? me.may_write && writes(me.role) : false;
+  const unfiltered = filter === "All" && !search;
 
   useLive(
-    useCallback((event: LiveEvent) => {
-      if (event.type !== "recording") return;
-      const update = event.payload as unknown as Recording;
-      setRecordings((current) =>
-        current.some((r) => r.id === update.id)
-          ? current.map((r) => (r.id === update.id ? { ...r, ...update } : r))
-          : [update, ...current],
-      );
-    }, []),
+    useCallback(
+      (event: LiveEvent) => {
+        if (event.type !== "recording") return;
+        const update = event.payload as unknown as Recording;
+        if (onScreen.current.has(update.id)) {
+          setRecordings((current) =>
+            current.map((recording) =>
+              recording.id === update.id
+                ? // The agent publishes without the camera's name, so keep the
+                  // one already on the row rather than blanking it.
+                  {
+                    ...recording,
+                    ...update,
+                    camera_name: update.camera_name || recording.camera_name,
+                  }
+                : recording,
+            ),
+          );
+          return;
+        }
+        // A recording that is not on screen. Pulling it in would fight the page
+        // or filter the person chose -- except on the unfiltered first page,
+        // which is exactly where they land after pressing Record.
+        if (page === 1 && unfiltered) void load();
+      },
+      [load, page, unfiltered],
+    ),
   );
 
-  const nameFor = (id: string) => cameras.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  function clearFilters() {
+    setQuery("");
+    setFilter("All");
+    setPage(1);
+  }
 
   async function remove(recording: Recording) {
     setRemoving(recording.id);
@@ -101,7 +176,10 @@ export default function RecordingsPage() {
     <div className="flex flex-col gap-6">
       <div>
         <Eyebrow>Recordings</Eyebrow>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Recordings</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+          {total} recording{total === 1 ? "" : "s"}
+          {unfiltered ? "" : " found"}
+        </h1>
         <p className="mt-1.5 max-w-2xl text-sm text-fg-3">
           A recording is a set of sealed segments plus a record of when the stream was
           absent, so an outage costs the seconds it lasted rather than the whole session.
@@ -112,6 +190,41 @@ export default function RecordingsPage() {
 
       {error ? <Banner tone="bad" title={error} /> : null}
 
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+        <div className="flex flex-wrap gap-1">
+          {FILTERS.map((option) => (
+            <Button
+              key={option.label}
+              size="sm"
+              variant={option.label === filter ? "primary" : "quiet"}
+              aria-pressed={option.label === filter}
+              onClick={() => {
+                setPage(1);
+                setFilter(option.label);
+              }}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by camera name, camera ID, or location…"
+            aria-label="Search recordings"
+            maxLength={200}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-2xs text-fg-3 tnum">
+          {loading
+            ? "Searching…"
+            : total
+              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} of ${total}`
+              : "No results"}
+        </span>
+      </div>
+
       {confirming ? (
         <Modal
           open
@@ -121,7 +234,7 @@ export default function RecordingsPage() {
         >
           <div className="flex flex-col gap-4">
             <p className="text-sm text-fg-2">
-              {nameFor(confirming.camera_id)} ·{" "}
+              {confirming.camera_name || confirming.camera_id.slice(0, 8)} ·{" "}
               {confirming.total_bytes ? bytes(confirming.total_bytes) : "no files"} ·{" "}
               {ago(confirming.started_at ?? null)}
             </p>
@@ -136,11 +249,17 @@ export default function RecordingsPage() {
       ) : null}
 
       <Card>
-        <CardHeader title="All recordings" sub={`${recordings.length} total`} />
         {recordings.length === 0 ? (
           <Empty
-            title="Nothing recorded yet"
-            hint="Select cameras on the Cameras page and press Record."
+            title={unfiltered ? "Nothing recorded yet" : "No recordings match that"}
+            hint={
+              unfiltered
+                ? "Select cameras on the Cameras page and press Record."
+                : "Try another filter, or search for a different camera."
+            }
+            action={
+              unfiltered ? undefined : <Button onClick={clearFilters}>Clear filters</Button>
+            }
           />
         ) : (
           <div className="overflow-x-auto">
@@ -162,7 +281,9 @@ export default function RecordingsPage() {
               <tbody>
                 {recordings.map((recording) => (
                   <tr key={recording.id} className="border-b border-line-soft last:border-0">
-                    <td className="px-5 py-3 font-medium">{nameFor(recording.camera_id)}</td>
+                    <td className="px-5 py-3 font-medium">
+                      {recording.camera_name || recording.camera_id.slice(0, 8)}
+                    </td>
                     <td className="px-5 py-3">
                       <Badge tone={TONE[recording.state]}>{LABEL[recording.state]}</Badge>
                     </td>
@@ -211,7 +332,7 @@ export default function RecordingsPage() {
                             variant="danger"
                             // In-flight recordings belong to the agent, which is
                             // still writing them; the server refuses those too.
-                            disabled={IN_FLIGHT.has(recording.state) || removing === recording.id}
+                            disabled={STILL_RUNNING.has(recording.state) || removing === recording.id}
                             onClick={() => setConfirming(recording)}
                           >
                             {removing === recording.id ? "Deleting…" : "Delete"}
@@ -226,6 +347,8 @@ export default function RecordingsPage() {
           </div>
         )}
       </Card>
+
+      <Pagination page={page} pages={pages} setPage={setPage} label="Recording pages" />
 
       <Modal
         open={links !== null}

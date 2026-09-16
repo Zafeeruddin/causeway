@@ -7,6 +7,7 @@ import { ago, bytes, modeLabel } from "@/lib/format";
 import { administers, writes, type Camera, type Gate, type ImportResult, type Me, type Profile, type Source } from "@/lib/types";
 import { GateLadder } from "@/components/GateLadder";
 import { LivePreview } from "@/components/LivePreview";
+import { Pagination } from "@/components/Pagination";
 import {
   Badge, Banner, Button, Card, CardHeader, Dot, Empty, Eyebrow, Field,
   Input, Modal, PasswordInput, Select, Textarea, type Tone,
@@ -201,7 +202,7 @@ export default function CamerasPage() {
               }}
             />
           ))}
-          <CameraPagination page={page} pages={pages} setPage={setPage} />
+          <Pagination page={page} pages={pages} setPage={setPage} label="Camera pages" />
         </div>
       )}
 
@@ -245,63 +246,6 @@ export default function CamerasPage() {
       />
     </div>
   );
-}
-
-function CameraPagination({
-  page,
-  pages,
-  setPage,
-}: {
-  page: number;
-  pages: number;
-  setPage: (page: number) => void;
-}) {
-  if (pages <= 1) return null;
-  const visible = paginationWindow(page, pages);
-
-  return (
-    <nav
-      className="flex flex-wrap items-center justify-center gap-1 pt-2"
-      aria-label="Camera pages"
-    >
-      <Button size="sm" onClick={() => setPage(page - 1)} disabled={page === 1}>
-        Previous
-      </Button>
-      {visible.map((item, index) =>
-        item === "gap" ? (
-          <span key={`gap-${index}`} className="px-1.5 text-xs text-fg-3" aria-hidden>
-            …
-          </span>
-        ) : (
-          <Button
-            key={item}
-            size="sm"
-            variant={item === page ? "primary" : "quiet"}
-            onClick={() => setPage(item)}
-            aria-current={item === page ? "page" : undefined}
-            aria-label={`Page ${item}`}
-          >
-            {item}
-          </Button>
-        ),
-      )}
-      <Button size="sm" onClick={() => setPage(page + 1)} disabled={page === pages}>
-        Next
-      </Button>
-    </nav>
-  );
-}
-
-function paginationWindow(page: number, pages: number): (number | "gap")[] {
-  const wanted = new Set([1, pages, page - 1, page, page + 1]);
-  const numbers = [...wanted].filter((value) => value >= 1 && value <= pages).sort((a, b) => a - b);
-  const result: (number | "gap")[] = [];
-  for (const value of numbers) {
-    const previous = result[result.length - 1];
-    if (typeof previous === "number" && value - previous > 1) result.push("gap");
-    result.push(value);
-  }
-  return result;
 }
 
 function CameraRow({
