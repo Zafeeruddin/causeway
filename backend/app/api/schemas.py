@@ -456,6 +456,11 @@ class RecordingOut(Model):
     id: str
     team_id: str
     camera_id: str
+    #: Resolved alongside the recording so that listing recordings does not mean
+    #: fetching the whole camera estate to label the rows. Empty only on a live
+    #: event, where the agent publishes what it has in hand; the dashboard keeps
+    #: the name it already had rather than blanking the row.
+    camera_name: str = ""
     state: RecordingState
     requested_seconds: int
     started_at: datetime | None = None
@@ -464,6 +469,14 @@ class RecordingOut(Model):
     gap_seconds: float = 0.0
     total_bytes: int = 0
     failure_reason: str = ""
+
+
+class RecordingPageOut(BaseModel):
+    items: list[RecordingOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class DownloadLink(BaseModel):

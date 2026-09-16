@@ -8,7 +8,8 @@
 
 import type {
   Admission, Camera, CameraPage, Comparison, ConnectResponse, DownloadLink, Gate, Health, ImportResult, Me,
-  Preview, Profile, Recording, ReachMode, ResetLink, SourceKind, SshAuth, StorageUsage, Team,
+  Preview, Profile, Recording, RecordingPage, RecordingState, ReachMode, ResetLink, SourceKind,
+  SshAuth, StorageUsage, Team,
   User, VpnKind,
 } from "./types";
 
@@ -147,6 +148,12 @@ export const api = {
 
   // recordings
   recordings: () => request<Recording[]>("/api/recordings"),
+  /** `states` is repeatable: "still running" is four states, not one. */
+  recordingPage: (q: string, states: RecordingState[], page: number, pageSize: number) => {
+    const params = new URLSearchParams({ q, page: String(page), page_size: String(pageSize) });
+    for (const state of states) params.append("state", state);
+    return request<RecordingPage>(`/api/recordings/page?${params}`);
+  },
   deleteRecording: (id: string) =>
     request<void>(`/api/recordings/${id}`, { method: "DELETE" }),
   startRecording: (camera_ids: string[], seconds: number) =>

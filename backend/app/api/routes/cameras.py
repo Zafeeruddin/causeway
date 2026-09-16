@@ -11,7 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import current_principal
-from app.api.deps import NOT_FOUND, deny_unless_team_admin, gateway, load_camera, previews
+from app.api.deps import (
+    NOT_FOUND,
+    deny_unless_team_admin,
+    gateway,
+    like_term,
+    load_camera,
+    previews,
+)
 from app.api.schemas import (
     CameraCreate,
     CameraOut,
@@ -70,7 +77,7 @@ async def page_cameras(
     stmt = scoped_select(Camera, principal)
     term = q.strip()
     if term:
-        pattern = f"%{_like_term(term)}%"
+        pattern = f"%{like_term(term)}%"
         stmt = stmt.where(
             or_(
                 Camera.name.ilike(pattern, escape="\\"),
@@ -103,11 +110,6 @@ async def page_cameras(
         page_size=page_size,
         pages=pages,
     )
-
-
-def _like_term(value: str) -> str:
-    """Make user text literal inside a LIKE pattern."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _camera_out(camera: Camera) -> CameraOut:

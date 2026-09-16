@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import current_principal, require_write
-from app.api.deps import load_recording
+from app.api.deps import like_term, load_recording
 from app.api.schemas import (
     AdmissionOut,
     AlignmentOut,
@@ -25,6 +25,7 @@ from app.api.schemas import (
     GapMarkOut,
     RecordingCreate,
     RecordingOut,
+    RecordingPageOut,
     SpanOut,
     StorageUsage,
     TrackOut,
@@ -49,16 +50,93 @@ DOWNLOAD_TTL = 3600
 ALIGNMENT_ACCURACY = 2.0
 
 
+def _recording_out(recording: Recording, camera_name: str | None) -> RecordingOut:
+    """A recording with its camera's name already on it.
+
+    Every list here joins the camera rather than returning bare ids. The
+    dashboard used to label rows by fetching the entire camera estate -- two
+    thousand rows, with their sources and profiles -- to resolve a hundred
+    names.
+    """
+    return RecordingOut.model_validate(recording).model_copy(
+        update={"camera_name": camera_name or ""}
+    )
+
+
 @router.get("/recordings", response_model=list[RecordingOut])
 async def list_recordings(
     limit: int = 100,
     db: AsyncSession = Depends(get_session),
     principal: Principal = Depends(current_principal),
 ) -> list[RecordingOut]:
+    """The newest recordings, capped. The dashboard uses ``/recordings/page``,
+    which can filter and says how many it did not return."""
     rows = await db.execute(
-        scoped_select(Recording, principal).order_by(Recording.created_at.desc()).limit(limit)
+        scoped_select(Recording, principal)
+        .join(Camera, Camera.id == Recording.camera_id)
+        .add_columns(Camera.name)
+        .order_by(Recording.created_at.desc())
+        .limit(limit)
     )
-    return [RecordingOut.model_validate(r) for r in rows.scalars().all()]
+    return [_recording_out(recording, name) for recording, name in rows.all()]
+
+
+@router.get("/recordings/page", response_model=RecordingPageOut)
+async def page_recordings(
+    q: str = Query(default="", max_length=200),
+    state: list[RecordingState] = Query(default=[]),  # noqa: B008
+    camera_id: str = Query(default="", max_length=36),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> RecordingPageOut:
+    """A bounded, filterable recordings list.
+
+    The plain list stops at ``limit`` and says nothing about having done so, so
+    the dashboard showed the first hundred rows and labelled that count as the
+    total. Once an estate records more than that, the oldest recordings are
+    simply unreachable. This reports ``total`` separately from what it returns.
+
+    ``state`` is repeatable, because the states a person wants together --
+    queued, recording, recovering, finalizing -- are "still running", which is
+    four states and not one.
+    """
+    stmt = scoped_select(Recording, principal).join(Camera, Camera.id == Recording.camera_id)
+    if state:
+        stmt = stmt.where(Recording.state.in_(state))
+    if camera_id:
+        stmt = stmt.where(Recording.camera_id == camera_id)
+    term = q.strip()
+    if term:
+        pattern = f"%{like_term(term)}%"
+        stmt = stmt.where(
+            or_(
+                Camera.name.ilike(pattern, escape="\\"),
+                Camera.ref.ilike(pattern, escape="\\"),
+                Camera.location.ilike(pattern, escape="\\"),
+            )
+        )
+
+    count = await db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    total = int(count or 0)
+    pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(page, pages)
+    rows = await db.execute(
+        stmt.add_columns(Camera.name)
+        # id breaks the tie: two recordings started in the same second would
+        # otherwise be free to swap places between pages and appear twice.
+        .order_by(Recording.created_at.desc(), Recording.id)
+        .offset((current_page - 1) * page_size)
+        .limit(page_size)
+    )
+    return RecordingPageOut(
+        items=[_recording_out(recording, name) for recording, name in rows.all()],
+        total=total,
+        page=current_page,
+        page_size=page_size,
+        pages=pages,
+    )
 
 
 @router.post("/recordings", response_model=list[RecordingOut], status_code=status.HTTP_202_ACCEPTED)
@@ -124,7 +202,8 @@ async def start_recording(
         {"cameras": len(cameras), "seconds": body.seconds, "estimated_bytes": estimate},
         team_id=cameras[0].team_id,
     )
-    return [RecordingOut.model_validate(r) for r in created]
+    names = {camera.id: camera.name for camera in cameras}
+    return [_recording_out(r, names.get(r.camera_id)) for r in created]
 
 
 @router.post("/recordings/estimate", response_model=AdmissionOut)
@@ -158,8 +237,12 @@ async def estimate(
 
 
 @router.get("/recordings/{recording_id}", response_model=RecordingOut)
-async def get_recording(recording: Recording = Depends(load_recording)) -> RecordingOut:
-    return RecordingOut.model_validate(recording)
+async def get_recording(
+    recording: Recording = Depends(load_recording),
+    db: AsyncSession = Depends(get_session),
+) -> RecordingOut:
+    name = await db.scalar(select(Camera.name).where(Camera.id == recording.camera_id))
+    return _recording_out(recording, name)
 
 
 @router.get("/recordings/{recording_id}/downloads", response_model=list[DownloadLink])

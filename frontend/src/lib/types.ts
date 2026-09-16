@@ -109,9 +109,17 @@ export interface ImportResult {
 }
 
 export interface Recording {
-  id: string; team_id: string; camera_id: string; state: RecordingState;
+  id: string; team_id: string; camera_id: string;
+  /** Resolved by the API. Empty on a live event, which the agent sends without
+   *  it; the row keeps the name it already had. */
+  camera_name: string;
+  state: RecordingState;
   requested_seconds: number; started_at: string | null; finished_at: string | null;
   captured_seconds: number; gap_seconds: number; total_bytes: number; failure_reason: string;
+}
+
+export interface RecordingPage {
+  items: Recording[]; total: number; page: number; page_size: number; pages: number;
 }
 
 /** A stretch of video with no discontinuity, placed on both clocks. */

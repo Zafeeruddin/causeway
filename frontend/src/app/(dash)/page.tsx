@@ -9,6 +9,9 @@ import type { Camera, LiveEvent, Profile, Recording, StorageUsage } from "@/lib/
 import { StorageMeter } from "@/components/StorageMeter";
 import { Badge, Card, CardHeader, Dot, Empty, Eyebrow, type Tone } from "@/components/ui";
 
+/** Recordings listed under "Recent recordings". */
+const RECENT = 4;
+
 const PROFILE_TONE: Record<string, Tone> = {
   up: "ok",
   connecting: "steel",
@@ -37,7 +40,9 @@ export default function OverviewPage() {
   const load = useCallback(() => {
     api.profiles().then(setProfiles).catch(() => {});
     api.cameras().then(setCameras).catch(() => {});
-    api.recordings().then(setRecordings).catch(() => {});
+    // Four rows are shown, so four are asked for. The plain list returns a
+    // hundred.
+    api.recordingPage("", [], 1, RECENT).then((p) => setRecordings(p.items)).catch(() => {});
     api.storage().then(setUsage).catch(() => {});
     api.health().then((h) => setStorageHost(h.storage?.endpoint ?? "")).catch(() => {});
   }, []);
@@ -176,10 +181,10 @@ export default function OverviewPage() {
               <p className="px-5 py-6 text-xs text-fg-3">Nothing recorded yet.</p>
             ) : (
               <ul className="divide-y divide-line-soft">
-                {recordings.slice(0, 4).map((r) => (
-                  <li key={r.id} className="flex items-center justify-between px-5 py-2.5">
-                    <span className="font-mono text-2xs text-fg-3">
-                      {r.id.slice(0, 8)}
+                {recordings.map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                    <span className="min-w-0 truncate text-xs text-fg-2">
+                      {r.camera_name || r.id.slice(0, 8)}
                     </span>
                     <Badge tone={r.state === "complete" ? "ok" : r.state === "failed" ? "bad" : "steel"}>
                       {r.state}
