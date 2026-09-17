@@ -411,6 +411,16 @@ class CameraPageOut(BaseModel):
     pages: int
 
 
+class CameraStatsOut(BaseModel):
+    """The overview's figures, counted in the database rather than the browser."""
+
+    cameras: int
+    sources: int
+    #: Sources whose last probe succeeded. A source that has never been probed
+    #: is not reachable -- ``last_probe_ok`` is null until a gate has run.
+    sources_reachable: int
+
+
 class ImportRequest(BaseModel):
     team_id: str
     profile_id: str

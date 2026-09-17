@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +23,7 @@ from app.api.schemas import (
     CameraCreate,
     CameraOut,
     CameraPageOut,
+    CameraStatsOut,
     GateResultOut,
     ImportIssueOut,
     ImportPreview,
@@ -109,6 +110,40 @@ async def page_cameras(
         page=current_page,
         page_size=page_size,
         pages=pages,
+    )
+
+
+@router.get("/stats", response_model=CameraStatsOut)
+async def camera_stats(
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> CameraStatsOut:
+    """How many cameras and sources there are, and how many answered last time.
+
+    The overview used to derive these three numbers in the browser from the
+    full camera list -- every camera, with its sources and its profile. On an
+    estate of two thousand cameras that is a large response rendered as two
+    figures, fetched again on every visit.
+    """
+    scoped = scoped_select(Camera, principal).order_by(None).subquery()
+    cameras = int(await db.scalar(select(func.count()).select_from(scoped)) or 0)
+    # A left join from the cameras, so an estate whose cameras have no sources
+    # yet still counts its cameras.
+    sources, reachable = (
+        await db.execute(
+            select(
+                func.count(CameraSource.id),
+                func.coalesce(
+                    # Three-valued: true, false, and null for never probed.
+                    # Only a successful probe counts as reachable.
+                    func.sum(case((CameraSource.last_probe_ok.is_(True), 1), else_=0)),
+                    0,
+                ),
+            ).join_from(CameraSource, scoped, scoped.c.id == CameraSource.camera_id)
+        )
+    ).one()
+    return CameraStatsOut(
+        cameras=cameras, sources=int(sources or 0), sources_reachable=int(reachable or 0)
     )
 
 

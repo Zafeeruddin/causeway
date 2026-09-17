@@ -7,7 +7,7 @@
  */
 
 import type {
-  Admission, Camera, CameraPage, Comparison, ConnectResponse, DownloadLink, Gate, Health, ImportResult, Me,
+  Admission, Camera, CameraPage, CameraStats, Comparison, ConnectResponse, DownloadLink, Gate, Health, ImportResult, Me,
   Preview, Profile, Recording, RecordingPage, RecordingState, ReachMode, ResetLink, SourceKind,
   SshAuth, StorageUsage, Team,
   User, VpnKind,
@@ -107,6 +107,8 @@ export const api = {
 
   // cameras
   cameras: () => request<Camera[]>("/api/cameras"),
+  /** The overview's three figures, counted by the server. */
+  cameraStats: () => request<CameraStats>("/api/cameras/stats"),
   cameraPage: (query: string, page: number, pageSize: number) => {
     const params = new URLSearchParams({
       q: query,

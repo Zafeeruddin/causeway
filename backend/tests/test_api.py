@@ -848,3 +848,49 @@ async def test_a_recording_page_only_shows_your_own_teams_recordings(client, see
         "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
     )
     assert (await client.get("/api/recordings/page")).json()["total"] == 0
+
+
+async def test_the_overview_counts_cameras_without_listing_them(as_member, seeded, direct_profile):
+    """The overview needs three numbers. Deriving them in the browser meant
+    fetching every camera, with its sources and its profile, to render two."""
+    await _a_camera(as_member, seeded, direct_profile, name="One")
+    await _a_camera(as_member, seeded, direct_profile, name="Two")
+
+    body = (await as_member.get("/api/cameras/stats")).json()
+    assert body["cameras"] == 2
+    assert body["sources"] == 2
+    # Never probed is not reachable: last_probe_ok stays null until a gate runs,
+    # and counting null as success would report an estate that answers.
+    assert body["sources_reachable"] == 0
+
+
+async def test_camera_stats_only_count_your_own_teams(client, seeded):
+    await client.post(
+        "/api/auth/login", json={"email": "ops@example.com", "password": "other-password"}
+    )
+    body = (await client.get("/api/cameras/stats")).json()
+    assert body == {"cameras": 0, "sources": 0, "sources_reachable": 0}
+
+
+async def test_the_health_endpoint_says_when_a_deploy_is_in_progress(client, app):
+    """Whoever is signed in during a redeploy should be told that is what is
+    happening, rather than watching requests fail for no stated reason."""
+    assert (await client.get("/api/health")).json()["status"] == "ok"
+
+    app.state.maintenance.on = True
+    app.state.maintenance.note = "Back in a minute"
+
+    body = (await client.get("/api/health")).json()
+    assert body["status"] == "maintenance"
+    assert body["maintenance"]["note"] == "Back in a minute"
+    # Still a 200, and still says which build: "which version is on that
+    # machine" is asked most often during exactly this.
+    assert body["version"]
+
+
+async def test_maintenance_outranks_a_storage_outage(client, app):
+    """Storage being unreachable *because it is being moved* is not news the
+    person on the loading screen can act on. "Come back in a minute" is."""
+    app.state.maintenance.on = True
+    body = (await client.get("/api/health")).json()
+    assert body["status"] == "maintenance"
