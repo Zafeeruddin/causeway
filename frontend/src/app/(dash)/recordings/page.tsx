@@ -63,6 +63,7 @@ export default function RecordingsPage() {
   const [links, setLinks] = useState<DownloadLink[] | null>(null);
   const [confirming, setConfirming] = useState<Recording | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [me, setMe] = useState<Me | null>(null);
   const loadRequest = useRef(0);
@@ -109,9 +110,10 @@ export default function RecordingsPage() {
     onScreen.current = new Set(recordings.map((recording) => recording.id));
   }, [recordings]);
 
-  // Deleting a recording deletes the files. A demo account is refused by the
-  // server; dropping the button keeps that from being a surprise.
-  const mayDelete = me ? me.may_write && writes(me.role) : false;
+  // Deleting removes the files, and sending one again spends the storage
+  // budget. The server refuses a demo account either way; dropping the buttons
+  // keeps that from being a surprise.
+  const mayWrite = me ? me.may_write && writes(me.role) : false;
   const unfiltered = filter === "All" && !search;
 
   useLive(
@@ -160,6 +162,19 @@ export default function RecordingsPage() {
       setError(err instanceof ApiError ? err.message : "Could not delete the recording.");
     } finally {
       setRemoving(null);
+    }
+  }
+
+  async function sendAgain(recording: Recording) {
+    setSending(recording.id);
+    setError("");
+    try {
+      await api.reshipRecording(recording.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not send the recording again.");
+    } finally {
+      setSending(null);
     }
   }
 
@@ -308,6 +323,18 @@ export default function RecordingsPage() {
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center justify-end gap-2">
+                        {/* The capture worked and only the upload failed, so
+                            the footage is still on the work volume. */}
+                        {recording.can_reship && mayWrite ? (
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            disabled={sending === recording.id}
+                            onClick={() => sendAgain(recording)}
+                          >
+                            {sending === recording.id ? "Sending…" : "Retry upload"}
+                          </Button>
+                        ) : null}
                         {recording.state === "complete" ? (
                           <Link href={`/recordings/${recording.id}`}>
                             <Button size="sm" variant="primary">
@@ -326,7 +353,7 @@ export default function RecordingsPage() {
                         >
                           Download
                         </Button>
-                        {mayDelete ? (
+                        {mayWrite ? (
                           <Button
                             size="sm"
                             variant="danger"

@@ -36,6 +36,7 @@ from app.enums import RecordingState, SourceKind
 from app.models import Camera, Gap, Recording, Segment, StorageObject
 from app.services.audit import record as audit
 from app.services.playback import build_spans, gap_marks, origin_of, window_seconds
+from app.services.reship import has_files_on_disk, reship_recording
 from app.storage.client import StorageError, object_store
 from app.storage.keys import download_name
 from app.storage.retention import StoragePolicy, admit, estimate_bytes, usage_state
@@ -50,7 +51,25 @@ DOWNLOAD_TTL = 3600
 ALIGNMENT_ACCURACY = 2.0
 
 
-def _recording_out(recording: Recording, camera_name: str | None) -> RecordingOut:
+async def _recordings_out(rows: list[tuple[Recording, str | None]]) -> list[RecordingOut]:
+    """Label a list of recordings, and say which of them can be sent again.
+
+    The disk is only consulted for failed recordings, which on a healthy
+    deployment is none of them -- and the work directory's existence is the
+    answer, so there is no flag that can fall out of step with the filesystem.
+    """
+    out = []
+    for recording, name in rows:
+        retriable = recording.state == RecordingState.FAILED and await has_files_on_disk(
+            recording.id
+        )
+        out.append(_recording_out(recording, name, can_reship=retriable))
+    return out
+
+
+def _recording_out(
+    recording: Recording, camera_name: str | None, *, can_reship: bool = False
+) -> RecordingOut:
     """A recording with its camera's name already on it.
 
     Every list here joins the camera rather than returning bare ids. The
@@ -59,7 +78,7 @@ def _recording_out(recording: Recording, camera_name: str | None) -> RecordingOu
     names.
     """
     return RecordingOut.model_validate(recording).model_copy(
-        update={"camera_name": camera_name or ""}
+        update={"camera_name": camera_name or "", "can_reship": can_reship}
     )
 
 
@@ -78,7 +97,7 @@ async def list_recordings(
         .order_by(Recording.created_at.desc())
         .limit(limit)
     )
-    return [_recording_out(recording, name) for recording, name in rows.all()]
+    return await _recordings_out(list(rows.all()))
 
 
 @router.get("/recordings/page", response_model=RecordingPageOut)
@@ -131,7 +150,7 @@ async def page_recordings(
         .limit(page_size)
     )
     return RecordingPageOut(
-        items=[_recording_out(recording, name) for recording, name in rows.all()],
+        items=await _recordings_out(list(rows.all())),
         total=total,
         page=current_page,
         page_size=page_size,
@@ -241,6 +260,47 @@ async def get_recording(
     recording: Recording = Depends(load_recording),
     db: AsyncSession = Depends(get_session),
 ) -> RecordingOut:
+    name = await db.scalar(select(Camera.name).where(Camera.id == recording.camera_id))
+    return (await _recordings_out([(recording, name)]))[0]
+
+
+@router.post(
+    "/recordings/{recording_id}/reship",
+    response_model=RecordingOut,
+    # On the decorator so it runs before load_recording: an account that may not
+    # do this is told so without the server first confirming the id exists.
+    dependencies=[Depends(require_write)],
+)
+async def send_recording_again(
+    recording: Recording = Depends(load_recording),
+    db: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(current_principal),
+) -> RecordingOut:
+    """Upload a recording whose capture worked but whose upload did not.
+
+    Open to whoever may start a recording rather than to administrators alone:
+    the person who lost the footage is the person who wants it back, and this
+    can produce nothing they were not already allowed to produce. Viewers and
+    demo accounts are refused for the same reason they cannot record -- it
+    spends the storage budget.
+
+    The admission check still runs. The bytes are real and already on disk, and
+    storage may well have filled in the days since the recording failed.
+    """
+    outcome = await reship_recording(db, recording)
+    if not outcome.ok:
+        raise HTTPException(status.HTTP_409_CONFLICT, outcome.reason)
+
+    await audit(
+        db,
+        principal,
+        "recording.reship",
+        "recording",
+        recording.id,
+        {"bytes": outcome.bytes},
+        team_id=recording.team_id,
+    )
+    await db.commit()
     name = await db.scalar(select(Camera.name).where(Camera.id == recording.camera_id))
     return _recording_out(recording, name)
 

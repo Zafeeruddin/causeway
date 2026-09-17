@@ -17,9 +17,10 @@ from app.api.auth import hash_password
 from app.config import settings
 from app.db import engine, session
 from app.enums import Role
-from app.models import Base, Team, TeamMember, User
+from app.models import Base, Recording, Team, TeamMember, User
 from app.security.reset import RESET_TTL_SECONDS, issue_reset
 from app.services.maintenance import MaintenanceFlag
+from app.services.reship import recoverable, reship_recording
 from app.storage.client import StorageError, object_store
 
 
@@ -157,6 +158,47 @@ async def check_storage() -> None:
     print("ok: bucket reachable and writable by these credentials")
 
 
+async def reship_failed(ids: tuple[str, ...], every: bool, dry_run: bool) -> None:
+    """Send recordings whose capture worked but whose upload did not.
+
+    The store being unreachable at shipping time leaves the footage on the work
+    volume rather than destroying it, so a storage outage costs a delay instead
+    of the recording -- but only if somebody sends it afterwards.
+    """
+    async with session() as db:
+        if every:
+            targets = await recoverable(db)
+        else:
+            targets = []
+            for recording_id in ids:
+                found = await db.get(Recording, recording_id)
+                if found is None:
+                    print(f"{recording_id}: no such recording")
+                    continue
+                targets.append(found)
+
+        if not targets:
+            print("nothing to send")
+            return
+
+        if dry_run:
+            for recording in targets:
+                print(f"{recording.id}  {recording.state}  would be sent")
+            print(f"{len(targets)} recording(s) would be sent")
+            return
+
+        sent = left = 0
+        for recording in targets:
+            outcome = await reship_recording(db, recording)
+            if outcome.ok:
+                sent += 1
+                print(f"{recording.id}  sent, {outcome.bytes / 1024 / 1024:.1f} MB")
+            else:
+                left += 1
+                print(f"{recording.id}  {outcome.reason}")
+        print(f"{sent} recovered, {left} still failed")
+
+
 async def maintenance(action: str, note: str) -> None:
     """Put the maintenance screen up, take it down, or say which it is.
 
@@ -209,6 +251,16 @@ def main() -> None:
 
     sub.add_parser("check-storage", help="verify the Versity gateway and bucket")
 
+    rs = sub.add_parser("reship", help="upload recordings whose capture worked but upload failed")
+    rs.add_argument("ids", nargs="*", help="recording ids; omit and pass --all instead")
+    rs.add_argument(
+        "--all",
+        action="store_true",
+        dest="every",
+        help="every failed recording that still has its files",
+    )
+    rs.add_argument("--dry-run", action="store_true", help="say what would be sent")
+
     maint = sub.add_parser("maintenance", help="show or set the maintenance screen")
     maint.add_argument("action", choices=["on", "off", "status"])
     maint.add_argument("--note", default="", help="what the screen should tell people")
@@ -230,6 +282,8 @@ def main() -> None:
         asyncio.run(create_team(args.name, args.slug, args.member))
     elif args.command == "check-storage":
         asyncio.run(check_storage())
+    elif args.command == "reship":
+        asyncio.run(reship_failed(tuple(args.ids), args.every, args.dry_run))
     elif args.command == "maintenance":
         asyncio.run(maintenance(args.action, args.note))
 

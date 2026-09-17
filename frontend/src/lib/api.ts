@@ -158,6 +158,9 @@ export const api = {
   },
   deleteRecording: (id: string) =>
     request<void>(`/api/recordings/${id}`, { method: "DELETE" }),
+  /** Send a recording whose capture worked but whose upload failed. */
+  reshipRecording: (id: string) =>
+    request<Recording>(`/api/recordings/${id}/reship`, { method: "POST" }),
   startRecording: (camera_ids: string[], seconds: number) =>
     request<Recording[]>("/api/recordings", { method: "POST", ...json({ camera_ids, seconds }) }),
   estimate: (camera_ids: string[], seconds: number) =>

@@ -123,6 +123,8 @@ export interface Recording {
   state: RecordingState;
   requested_seconds: number; started_at: string | null; finished_at: string | null;
   captured_seconds: number; gap_seconds: number; total_bytes: number; failure_reason: string;
+  /** Failed, but the footage is still on the work volume and can be sent again. */
+  can_reship: boolean;
 }
 
 export interface RecordingPage {
