@@ -479,6 +479,11 @@ class RecordingOut(Model):
     gap_seconds: float = 0.0
     total_bytes: int = 0
     failure_reason: str = ""
+    #: This recording failed, but its footage is still on the work volume and
+    #: can be sent again. Set only for failed recordings, and only after the
+    #: files are confirmed present -- the dashboard offers the button on this
+    #: alone, so a stale true would offer a recovery that cannot happen.
+    can_reship: bool = False
 
 
 class RecordingPageOut(BaseModel):

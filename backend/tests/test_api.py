@@ -894,3 +894,54 @@ async def test_maintenance_outranks_a_storage_outage(client, app):
     app.state.maintenance.on = True
     body = (await client.get("/api/health")).json()
     assert body["status"] == "maintenance"
+
+
+async def _a_failed_recording(client, seeded, profile_id, sessions, name="Gate") -> str:
+    """A recording that reached the agent and then failed, as a storage outage
+    leaves one."""
+    camera_id = await _a_camera(client, seeded, profile_id, name=name)
+    started = await client.post("/api/recordings", json={"camera_ids": [camera_id], "seconds": 60})
+    assert started.status_code == 202
+    recording_id = started.json()[0]["id"]
+    async with sessions() as db:
+        row = await db.get(Recording, recording_id)
+        row.state = RecordingState.FAILED
+        row.failure_reason = "rtsp: The recording store could not be reached."
+        await db.commit()
+    return recording_id
+
+
+async def test_a_recording_with_no_files_left_cannot_be_sent_again(
+    as_member, seeded, direct_profile, sessions
+):
+    """The work directory's absence is the answer. Offering a recovery that
+    cannot happen is worse than saying there is nothing to recover."""
+    recording_id = await _a_failed_recording(as_member, seeded, direct_profile, sessions)
+
+    response = await as_member.post(f"/api/recordings/{recording_id}/reship")
+
+    assert response.status_code == 409
+    assert "work volume" in response.text
+
+
+async def test_a_failed_recording_without_its_files_is_not_offered_a_retry(
+    as_member, seeded, direct_profile, sessions
+):
+    recording_id = await _a_failed_recording(as_member, seeded, direct_profile, sessions)
+
+    page = (await as_member.get("/api/recordings/page")).json()
+    row = next(item for item in page["items"] if item["id"] == recording_id)
+
+    assert row["state"] == "failed"
+    assert row["can_reship"] is False
+
+
+async def test_a_demo_account_cannot_send_a_recording_again(as_demo):
+    """Demo is the only tier that may not write. A viewer may -- viewers start
+    recordings and delete them -- so recovering one is theirs to do as well.
+
+    Refused before the id is looked up, so the answer says nothing about
+    whether that recording exists.
+    """
+    response = await as_demo.post("/api/recordings/does-not-exist/reship")
+    assert response.status_code == 403
