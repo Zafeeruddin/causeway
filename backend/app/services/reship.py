@@ -18,6 +18,7 @@ from pathlib import Path
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -58,7 +59,14 @@ async def reship_recording(
     *,
     store: ObjectStore | None = None,
 ) -> ReshipOutcome:
-    """Upload what is on disk for one failed recording and complete it."""
+    """Upload what is on disk for one failed recording and complete it.
+
+    The caller's copy of the row is not trusted for the state check. Sessions
+    here are built with ``expire_on_commit=False``, so an object held across a
+    commit keeps whatever state it was loaded with -- and a stale ``failed``
+    would send a recording that another caller has already recovered.
+    """
+    await db.refresh(recording)
     if recording.state != RecordingState.FAILED:
         return ReshipOutcome(
             recording.id, False, reason="only a failed recording can be sent again."
@@ -128,7 +136,25 @@ async def reship_recording(
     recording.state = RecordingState.COMPLETE
     recording.total_bytes = result.bytes
     recording.failure_reason = ""
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # s3_key is unique, and something has already recorded these objects --
+        # a concurrent recovery, or a caller working from a stale copy of this
+        # row. The upload writes the same keys with the same bytes either way,
+        # so the footage is in the bucket and the recording is recovered; it
+        # simply was not this caller who recorded it. Losing the batch over
+        # that would strand every recording still queued behind it.
+        await db.rollback()
+        log.info("reship.already_recorded", recording=recording.id)
+        fresh = await db.get(Recording, recording.id)
+        if fresh is not None and fresh.state != RecordingState.COMPLETE:
+            fresh.state = RecordingState.COMPLETE
+            fresh.total_bytes = result.bytes
+            fresh.failure_reason = ""
+            await db.commit()
+        await discard(directory)
+        return ReshipOutcome(recording.id, True, bytes=result.bytes)
 
     # Only now: the work directory is the only copy until the objects are rows.
     await discard(directory)

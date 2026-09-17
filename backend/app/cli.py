@@ -167,36 +167,52 @@ async def reship_failed(ids: tuple[str, ...], every: bool, dry_run: bool) -> Non
     """
     async with session() as db:
         if every:
-            targets = await recoverable(db)
+            targets = [recording.id for recording in await recoverable(db)]
         else:
             targets = []
             for recording_id in ids:
-                found = await db.get(Recording, recording_id)
-                if found is None:
+                if await db.get(Recording, recording_id) is None:
                     print(f"{recording_id}: no such recording")
                     continue
-                targets.append(found)
+                targets.append(recording_id)
 
-        if not targets:
-            print("nothing to send")
-            return
+    if not targets:
+        print("nothing to send")
+        return
 
-        if dry_run:
-            for recording in targets:
-                print(f"{recording.id}  {recording.state}  would be sent")
-            print(f"{len(targets)} recording(s) would be sent")
-            return
+    if dry_run:
+        for recording_id in targets:
+            print(f"{recording_id}  would be sent")
+        print(f"{len(targets)} recording(s) would be sent")
+        return
 
-        sent = left = 0
-        for recording in targets:
-            outcome = await reship_recording(db, recording)
-            if outcome.ok:
-                sent += 1
-                print(f"{recording.id}  sent, {outcome.bytes / 1024 / 1024:.1f} MB")
-            else:
-                left += 1
-                print(f"{recording.id}  {outcome.reason}")
-        print(f"{sent} recovered, {left} still failed")
+    sent = left = 0
+    for recording_id in targets:
+        # One session, one transaction, one recording. A backlog is recovered
+        # one at a time, and neither a refusal nor an unexpected error on any of
+        # them may strand the ones queued behind it -- which is precisely what a
+        # single shared session did the first time this ran against a real
+        # backlog, where one duplicate key ended the run with ten left to go.
+        try:
+            async with session() as db:
+                recording = await db.get(Recording, recording_id)
+                if recording is None:
+                    left += 1
+                    print(f"{recording_id}  disappeared before it could be sent")
+                    continue
+                outcome = await reship_recording(db, recording)
+        except Exception as exc:  # noqa: BLE001 - one failure must not end the batch
+            left += 1
+            print(f"{recording_id}  {type(exc).__name__}: {exc}")
+            continue
+
+        if outcome.ok:
+            sent += 1
+            print(f"{recording_id}  sent, {outcome.bytes / 1024 / 1024:.1f} MB")
+        else:
+            left += 1
+            print(f"{recording_id}  {outcome.reason}")
+    print(f"{sent} recovered, {left} still failed")
 
 
 async def maintenance(action: str, note: str) -> None:
