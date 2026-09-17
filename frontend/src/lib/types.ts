@@ -81,6 +81,13 @@ export interface CameraPage {
   items: Camera[]; total: number; page: number; page_size: number; pages: number;
 }
 
+/** The overview's figures, counted by the server. */
+export interface CameraStats {
+  cameras: number; sources: number;
+  /** Sources whose last probe succeeded. Never-probed sources are not counted. */
+  sources_reachable: number;
+}
+
 /** A live WebRTC view of one camera, held open only while somebody is watching. */
 export interface Preview {
   id: string; camera_id: string; source_kind: SourceKind;
@@ -163,9 +170,11 @@ export interface StorageUsage {
  * ``storage`` is optional so a web build that lands before its API still loads.
  */
 export interface Health {
-  status: "ok" | "degraded";
+  status: "ok" | "degraded" | "maintenance";
   version: string;
   storage?: { status: "ok" | "unavailable" | "disabled"; endpoint: string };
+  /** Present only while somebody is deploying. */
+  maintenance?: { note: string };
 }
 
 export interface Admission {

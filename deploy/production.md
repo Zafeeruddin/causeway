@@ -387,6 +387,53 @@ So a redeploy that includes `agent` has a hand-over list, and it is short:
    preview must still play over HLS on 443. If it does not, `MEDIAMTX_HLS_ORIGIN`
    is not reaching MediaMTX and viewers behind NAT see "preview refused".
 
+### Use the script
+
+`deploy/redeploy.sh` does the api-and-web case and enforces the two rules that
+are easy to skip by hand:
+
+```bash
+cd /path/to/deploy && ./redeploy.sh
+SERVICES="api" ./redeploy.sh            # just the API
+NOTE="Back by 14:00" ./redeploy.sh      # what the screen tells people
+```
+
+**It refuses while anything is recording.** A recording is a live ffmpeg process
+writing segments to the work volume. Replacing a container underneath it strands
+them part-uploaded, so the recording is lost rather than interrupted. The guard
+reads `queued|recording|recovering|finalizing` straight from the database, and
+treats a query it cannot run as "something is recording" rather than as nothing.
+
+**It raises the maintenance screen first and lowers it only once the new API
+answers.** If the new API never answers, the screen stays up and the script
+exits non-zero -- a half-finished deploy should not look open for business.
+
+The flag is a Redis key, not an environment variable, so raising it takes effect
+at once and does not itself require recreating the api container. It also
+survives the swap, which is the point. Set it by hand with:
+
+```bash
+docker compose -f compose.prod.yml exec -T api cam maintenance on --note "..."
+docker compose -f compose.prod.yml exec -T api cam maintenance status
+docker compose -f compose.prod.yml exec -T api cam maintenance off
+```
+
+`/api/health` then reports `"status": "maintenance"`, and the dashboard shows an
+"Under maintenance" screen in front of sign-in and the dashboard alike. Once a
+browser has seen maintenance it keeps showing it even while the API is
+unreachable -- during a deploy, the API going away is the expected part.
+
+**One nginx line covers the rest.** While the web container is being replaced it
+is not listening, and nginx answers 502 rather than the maintenance screen. A
+static page closes that window:
+
+```nginx
+error_page 502 504 /maintenance.html;
+location = /maintenance.html { root /var/www/causeway; internal; }
+```
+
+Create `/var/www/causeway/maintenance.html` once; nothing else references it.
+
 Rolling back is a retag and a recreate, so take a database dump before the
 deploy and tag the images you are replacing:
 

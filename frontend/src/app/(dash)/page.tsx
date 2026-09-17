@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ago, modeLabel } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
-import type { Camera, LiveEvent, Profile, Recording, StorageUsage } from "@/lib/types";
+import type { CameraStats, LiveEvent, Profile, Recording, StorageUsage } from "@/lib/types";
 import { StorageMeter } from "@/components/StorageMeter";
 import { Badge, Card, CardHeader, Dot, Empty, Eyebrow, type Tone } from "@/components/ui";
 
@@ -32,14 +32,16 @@ const PROFILE_LABEL: Record<string, string> = {
 
 export default function OverviewPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [cameras, setCameras] = useState<CameraStats | null>(null);
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [storageHost, setStorageHost] = useState("");
 
   const load = useCallback(() => {
     api.profiles().then(setProfiles).catch(() => {});
-    api.cameras().then(setCameras).catch(() => {});
+    // Three numbers, counted by the server. Deriving them here meant fetching
+    // every camera with its sources and profile.
+    api.cameraStats().then(setCameras).catch(() => {});
     // Four rows are shown, so four are asked for. The plain list returns a
     // hundred.
     api.recordingPage("", [], 1, RECENT).then((p) => setRecordings(p.items)).catch(() => {});
@@ -67,8 +69,6 @@ export default function OverviewPage() {
   const needsAttention = profiles.filter(
     (p) => p.state === "needs_interaction" || p.state === "failed",
   );
-  const probed = cameras.flatMap((c) => c.sources).filter((s) => s.last_probe_ok === true).length;
-  const totalSources = cameras.reduce((n, c) => n + c.sources.length, 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -163,8 +163,11 @@ export default function OverviewPage() {
           <Card>
             <CardHeader title="Cameras" />
             <div className="grid grid-cols-2 divide-x divide-line-soft">
-              <Stat label="cameras" value={cameras.length} />
-              <Stat label="sources reachable" value={`${probed}/${totalSources}`} />
+              <Stat label="cameras" value={cameras ? cameras.cameras : "—"} />
+              <Stat
+                label="sources reachable"
+                value={cameras ? `${cameras.sources_reachable}/${cameras.sources}` : "—"}
+              />
             </div>
           </Card>
 

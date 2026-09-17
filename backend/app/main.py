@@ -22,6 +22,7 @@ from app.services.commands import CommandError, command_bus
 from app.services.connections import ConnectionService
 from app.services.events import event_bus
 from app.services.gateway import RemoteGateway, RemotePreview
+from app.services.maintenance import MaintenanceFlag
 from app.services.preview import PreviewError, PreviewManager
 from app.storage.health import StorageProbe
 from app.version import __version__
@@ -154,6 +155,13 @@ def create_app() -> FastAPI:
         body["storage"] = storage.public()
         if storage.status == "unavailable":
             body["status"] = "degraded"
+        # Checked last so it outranks the rest: when the answer is "this is
+        # being worked on, come back in a minute", nothing else on the page
+        # matters, including a store that is down because it is being moved.
+        maintenance = await _maintenance(app).current()
+        if maintenance.on:
+            body["status"] = "maintenance"
+            body["maintenance"] = maintenance.public()
         return JSONResponse(body)
 
     @app.get("/api/capabilities")
@@ -199,6 +207,14 @@ async def _network_status(app: FastAPI) -> dict:
         "ppp_available": bool(reported.get("ppp_available", True)),
         "agent": reported,
     }
+
+
+def _maintenance(app: FastAPI) -> MaintenanceFlag:
+    """Built on first use, like the storage probe below."""
+    flag = getattr(app.state, "maintenance", None)
+    if flag is None:
+        flag = app.state.maintenance = MaintenanceFlag()
+    return flag
 
 
 def _storage_probe(app: FastAPI) -> StorageProbe:

@@ -19,6 +19,7 @@ from app.db import engine, session
 from app.enums import Role
 from app.models import Base, Team, TeamMember, User
 from app.security.reset import RESET_TTL_SECONDS, issue_reset
+from app.services.maintenance import MaintenanceFlag
 from app.storage.client import StorageError, object_store
 
 
@@ -156,6 +157,25 @@ async def check_storage() -> None:
     print("ok: bucket reachable and writable by these credentials")
 
 
+async def maintenance(action: str, note: str) -> None:
+    """Put the maintenance screen up, take it down, or say which it is.
+
+    The flag lives in Redis, so this takes effect at once and survives the api
+    container being replaced -- which is the point, since it is meant to be up
+    *during* the replacement.
+    """
+    flag = MaintenanceFlag()
+    if action == "on":
+        current = await flag.turn_on(note)
+        print(f"maintenance: on ({current.note})")
+    elif action == "off":
+        await flag.turn_off()
+        print("maintenance: off")
+    else:
+        current = await flag.current()
+        print(f"maintenance: on ({current.note})" if current.on else "maintenance: off")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="cam", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -189,6 +209,10 @@ def main() -> None:
 
     sub.add_parser("check-storage", help="verify the Versity gateway and bucket")
 
+    maint = sub.add_parser("maintenance", help="show or set the maintenance screen")
+    maint.add_argument("action", choices=["on", "off", "status"])
+    maint.add_argument("--note", default="", help="what the screen should tell people")
+
     args = parser.parse_args()
     if args.command == "init-db":
         asyncio.run(init_db())
@@ -206,6 +230,8 @@ def main() -> None:
         asyncio.run(create_team(args.name, args.slug, args.member))
     elif args.command == "check-storage":
         asyncio.run(check_storage())
+    elif args.command == "maintenance":
+        asyncio.run(maintenance(args.action, args.note))
 
 
 if __name__ == "__main__":

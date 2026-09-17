@@ -24,6 +24,7 @@ from app.net.ssh import TunnelManager
 from app.security.secrets import MemoryBackend, set_secrets_backend
 from app.services.connections import ConnectionService
 from app.services.events import NullBus, set_event_bus
+from app.services.maintenance import Maintenance
 from app.services.preview import PreviewManager
 from app.storage.health import StorageProbe
 
@@ -182,6 +183,17 @@ async def bus():
     return b
 
 
+@dataclass
+class FakeMaintenance:
+    """The maintenance flag without Redis. Tests flip ``on`` directly."""
+
+    on: bool = False
+    note: str = ""
+
+    async def current(self) -> Maintenance:
+        return Maintenance(on=self.on, note=self.note)
+
+
 async def _storage_answers() -> None:
     """A store that is always there."""
 
@@ -222,6 +234,9 @@ async def app(sessions, bus):
     application.state.storage_probe = StorageProbe(
         check=_storage_answers, endpoint="storage.test", enabled=True
     )
+    # Same reasoning: /api/health reads the flag on every call, and no test
+    # should need a Redis to be told that nobody is deploying right now.
+    application.state.maintenance = FakeMaintenance()
     return application
 
 
