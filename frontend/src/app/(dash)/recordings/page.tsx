@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { ApiError, api } from "@/lib/api";
 import { ago, bytes, duration } from "@/lib/format";
 import { useLive } from "@/lib/useLive";
@@ -60,7 +59,12 @@ export default function RecordingsPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
   const [loading, setLoading] = useState(true);
-  const [links, setLinks] = useState<DownloadLink[] | null>(null);
+  const [player, setPlayer] = useState<{ recording: Recording; links: DownloadLink[] } | null>(
+    null,
+  );
+  /** Flipped by the video element itself. Whether a codec plays is the
+   *  browser's answer to give, not something worth predicting from metadata. */
+  const [playable, setPlayable] = useState(true);
   const [confirming, setConfirming] = useState<Recording | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [sending, setSending] = useState<string | null>(null);
@@ -115,6 +119,9 @@ export default function RecordingsPage() {
   // keeps that from being a surprise.
   const mayWrite = me ? me.may_write && writes(me.role) : false;
   const unfiltered = filter === "All" && !search;
+  // The sidecar has no play_url, so this finds the video without knowing which
+  // source kinds exist.
+  const video = player?.links.find((link) => link.play_url) ?? null;
 
   useLive(
     useCallback(
@@ -178,12 +185,13 @@ export default function RecordingsPage() {
     }
   }
 
-  async function openDownloads(recording: Recording) {
+  async function openPlayer(recording: Recording) {
     setError("");
+    setPlayable(true);
     try {
-      setLinks(await api.downloads(recording.id));
+      setPlayer({ recording, links: await api.downloads(recording.id) });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not build download links.");
+      setError(err instanceof ApiError ? err.message : "Could not open this recording.");
     }
   }
 
@@ -335,23 +343,15 @@ export default function RecordingsPage() {
                             {sending === recording.id ? "Sending…" : "Retry upload"}
                           </Button>
                         ) : null}
-                        {recording.state === "complete" ? (
-                          <Link href={`/recordings/${recording.id}`}>
-                            <Button size="sm" variant="primary">
-                              Compare
-                            </Button>
-                          </Link>
-                        ) : (
-                          <Button size="sm" disabled>
-                            Compare
-                          </Button>
-                        )}
+                        {/* One action, because watching and saving are the same
+                            errand: the player carries the download. */}
                         <Button
                           size="sm"
+                          variant="primary"
                           disabled={recording.state !== "complete"}
-                          onClick={() => openDownloads(recording)}
+                          onClick={() => openPlayer(recording)}
                         >
-                          Download
+                          Play
                         </Button>
                         {mayWrite ? (
                           <Button
@@ -378,33 +378,61 @@ export default function RecordingsPage() {
       <Pagination page={page} pages={pages} setPage={setPage} label="Recording pages" />
 
       <Modal
-        open={links !== null}
-        onClose={() => setLinks(null)}
-        title="Download"
-        sub="Links are signed and expire in an hour."
+        open={player !== null}
+        onClose={() => setPlayer(null)}
+        title={player ? player.recording.camera_name || "Recording" : ""}
+        sub={
+          player
+            ? `${duration(player.recording.captured_seconds || player.recording.requested_seconds)} captured · ${ago(player.recording.started_at ?? null)}`
+            : undefined
+        }
+        width="max-w-3xl"
       >
-        <ul className="flex flex-col gap-2">
-          {(links ?? []).map((link) => (
-            <li
-              key={link.filename}
-              className="flex items-center gap-3 rounded border border-line bg-ink px-4 py-3"
-            >
-              <Badge tone={link.source_kind === "rtsp" ? "steel" : link.source_kind ? "zone" : "muted"}>
-                {link.source_kind ?? "session"}
-              </Badge>
-              <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-2">
-                {link.filename}
-              </span>
-              <span className="font-mono text-2xs text-fg-3 tnum">{bytes(link.bytes)}</span>
-              <a
-                href={link.url}
-                className="rounded bg-steel px-3 py-1.5 text-xs font-medium text-ink hover:bg-steel/85"
+        <div className="flex flex-col gap-4">
+          {video && playable ? (
+            <video
+              // Keyed on the URL so opening a second recording loads that one
+              // rather than keeping the first element's buffered source.
+              key={video.play_url}
+              src={video.play_url}
+              controls
+              autoPlay
+              preload="auto"
+              className="w-full rounded border border-line bg-black"
+              onError={() => setPlayable(false)}
+            />
+          ) : (
+            <div className="rounded border border-warn/40 bg-warn-wash px-4 py-3 text-xs leading-relaxed text-warn">
+              This browser cannot play this recording. H.265 is the usual reason, and
+              some of these cameras send it — the file itself is fine. Save it below
+              and play it in VLC.
+            </div>
+          )}
+
+          <ul className="flex flex-col gap-2">
+            {(player?.links ?? []).map((link) => (
+              <li
+                key={link.filename}
+                className="flex items-center gap-3 rounded border border-line bg-ink px-4 py-3"
               >
-                Save
-              </a>
-            </li>
-          ))}
-        </ul>
+                <Badge tone={link.source_kind === "rtsp" ? "steel" : link.source_kind ? "zone" : "muted"}>
+                  {link.source_kind ?? "session"}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-2">
+                  {link.filename}
+                </span>
+                <span className="font-mono text-2xs text-fg-3 tnum">{bytes(link.bytes)}</span>
+                <a
+                  href={link.url}
+                  className="rounded bg-steel px-3 py-1.5 text-xs font-medium text-ink hover:bg-steel/85"
+                >
+                  Save
+                </a>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-fg-3">These links are signed and expire in an hour.</p>
+        </div>
       </Modal>
     </div>
   );

@@ -158,6 +158,9 @@ export interface Comparison {
 export interface DownloadLink {
   /** null for gaps.json, which describes the session rather than one source. */
   source_kind: SourceKind | null; filename: string; bytes: number; url: string; expires_in: number;
+  /** Signed without the attachment header, so a <video> plays it in place
+   *  instead of the browser saving it. Empty for the sidecar, which is JSON. */
+  play_url: string;
 }
 
 export interface StorageUsage {
