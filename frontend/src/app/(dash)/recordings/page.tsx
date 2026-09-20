@@ -7,7 +7,7 @@ import { useLive } from "@/lib/useLive";
 import { writes, type DownloadLink, type LiveEvent, type Me, type Recording, type RecordingState } from "@/lib/types";
 import { Pagination } from "@/components/Pagination";
 import {
-  Badge, Banner, Button, Card, Empty, Eyebrow, Input, Modal, type Tone,
+  Badge, Banner, Button, Card, Empty, Eyebrow, Input, Modal, Spinner, type Tone,
 } from "@/components/ui";
 
 const PAGE_SIZE = 25;
@@ -65,6 +65,8 @@ export default function RecordingsPage() {
   /** Flipped by the video element itself. Whether a codec plays is the
    *  browser's answer to give, not something worth predicting from metadata. */
   const [playable, setPlayable] = useState(true);
+  const [converting, setConverting] = useState(false);
+  const playerId = player?.recording.id ?? null;
   const [confirming, setConfirming] = useState<Recording | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [sending, setSending] = useState<string | null>(null);
@@ -114,14 +116,37 @@ export default function RecordingsPage() {
     onScreen.current = new Set(recordings.map((recording) => recording.id));
   }, [recordings]);
 
+  // The encode outlives the request that started it, so the only way to know it
+  // finished is to ask for the links again until the copy is among them.
+  useEffect(() => {
+    if (!converting || !playerId) return;
+    const timer = window.setInterval(() => {
+      api
+        .downloads(playerId)
+        .then((links) => {
+          if (!links.some((link) => link.variant === "h264" && link.play_url)) return;
+          setPlayer((current) =>
+            current && current.recording.id === playerId ? { ...current, links } : current,
+          );
+          setPlayable(true);
+          setConverting(false);
+        })
+        .catch(() => {});
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [converting, playerId]);
+
   // Deleting removes the files, and sending one again spends the storage
   // budget. The server refuses a demo account either way; dropping the buttons
   // keeps that from being a surprise.
   const mayWrite = me ? me.may_write && writes(me.role) : false;
   const unfiltered = filter === "All" && !search;
-  // The sidecar has no play_url, so this finds the video without knowing which
-  // source kinds exist.
-  const video = player?.links.find((link) => link.play_url) ?? null;
+  // Prefer the copy made for browsers; fall back to what the camera sent. The
+  // sidecar has no play_url, so neither lookup needs to know the source kinds.
+  const video =
+    player?.links.find((link) => link.variant === "h264" && link.play_url) ??
+    player?.links.find((link) => link.play_url) ??
+    null;
 
   useLive(
     useCallback(
@@ -188,10 +213,27 @@ export default function RecordingsPage() {
   async function openPlayer(recording: Recording) {
     setError("");
     setPlayable(true);
+    setConverting(false);
     try {
       setPlayer({ recording, links: await api.downloads(recording.id) });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not open this recording.");
+    }
+  }
+
+  async function convert() {
+    if (!player) return;
+    setError("");
+    setConverting(true);
+    try {
+      const answer = await api.makePlayable(player.recording.id);
+      if (answer.state === "unavailable") {
+        setConverting(false);
+        setError(answer.detail || "There is nothing stored to convert.");
+      }
+    } catch (err) {
+      setConverting(false);
+      setError(err instanceof ApiError ? err.message : "Could not start the conversion.");
     }
   }
 
@@ -402,10 +444,28 @@ export default function RecordingsPage() {
               onError={() => setPlayable(false)}
             />
           ) : (
-            <div className="rounded border border-warn/40 bg-warn-wash px-4 py-3 text-xs leading-relaxed text-warn">
-              This browser cannot play this recording. H.265 is the usual reason, and
-              some of these cameras send it — the file itself is fine. Save it below
-              and play it in VLC.
+            <div className="flex flex-col gap-3">
+              <div className="rounded border border-warn/40 bg-warn-wash px-4 py-3 text-xs leading-relaxed text-warn">
+                This browser cannot decode this recording. These cameras send H.265,
+                which Chrome and Firefox will not play — the file itself is fine.
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button size="sm" variant="primary" onClick={convert} disabled={converting}>
+                  {converting ? (
+                    <span className="flex items-center gap-2">
+                      <Spinner className="h-3 w-3" />
+                      Converting
+                    </span>
+                  ) : (
+                    "Convert for playback"
+                  )}
+                </Button>
+                <span className="text-xs text-fg-3">
+                  {converting
+                    ? "Re-encoding on the server. This can take a minute; the player starts on its own."
+                    : "Makes a copy this browser can play. The original is kept exactly as the camera sent it."}
+                </span>
+              </div>
             </div>
           )}
 

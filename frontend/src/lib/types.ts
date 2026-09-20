@@ -161,6 +161,15 @@ export interface DownloadLink {
   /** Signed without the attachment header, so a <video> plays it in place
    *  instead of the browser saving it. Empty for the sidecar, which is JSON. */
   play_url: string;
+  /** "" for the camera's own bytes, "h264" for the copy made so a browser can
+   *  decode them. The original is always kept. */
+  variant: string;
+}
+
+/** Where a browser-playable copy of a recording has got to. */
+export interface Playback {
+  state: "ready" | "converting" | "unavailable";
+  detail: string;
 }
 
 export interface StorageUsage {

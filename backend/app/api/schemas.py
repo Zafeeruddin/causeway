@@ -504,7 +504,17 @@ class DownloadLink(BaseModel):
     #: can play it where ``url`` would make the browser save it instead. Empty
     #: for the sidecar, which is not video.
     play_url: str = ""
+    #: "" for the recording as the camera sent it, "h264" for the copy made so
+    #: a browser can decode it. The dashboard prefers the copy when there is
+    #: one and offers to make it when there is not.
+    variant: str = ""
     expires_in: int
+
+
+class PlaybackOut(BaseModel):
+    #: ready | converting | unavailable
+    state: str
+    detail: str = ""
 
 
 # ---- live preview ------------------------------------------------------

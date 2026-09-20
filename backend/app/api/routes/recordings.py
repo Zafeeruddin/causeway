@@ -23,6 +23,7 @@ from app.api.schemas import (
     ComparisonOut,
     DownloadLink,
     GapMarkOut,
+    PlaybackOut,
     RecordingCreate,
     RecordingOut,
     RecordingPageOut,
@@ -34,7 +35,9 @@ from app.config import settings
 from app.db import Principal, get_session, scoped_select
 from app.enums import RecordingState, SourceKind
 from app.models import Camera, Gap, Recording, Segment, StorageObject
+from app.recorder.ffmpeg import PLAYBACK_FILE
 from app.services.audit import record as audit
+from app.services.commands import command_bus
 from app.services.playback import build_spans, gap_marks, origin_of, window_seconds
 from app.services.reship import has_files_on_disk, reship_recording
 from app.storage.client import StorageError, object_store
@@ -354,6 +357,7 @@ async def downloads(
             play_url = (
                 await store.presign(obj.s3_key, expires=DOWNLOAD_TTL) if obj.source_kind else ""
             )
+            variant = "h264" if obj.s3_key.rsplit("/", 1)[-1] == PLAYBACK_FILE else ""
         except StorageError as exc:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, exc.user_message) from exc
         links.append(
@@ -363,6 +367,7 @@ async def downloads(
                 bytes=obj.bytes,
                 url=url,
                 play_url=play_url,
+                variant=variant,
                 expires_in=DOWNLOAD_TTL,
             )
         )
@@ -377,6 +382,50 @@ async def downloads(
         team_id=recording.team_id,
     )
     return links
+
+
+@router.post("/recordings/{recording_id}/playable", response_model=PlaybackOut)
+async def make_playable(
+    recording: Recording = Depends(load_recording),
+    db: AsyncSession = Depends(get_session),
+) -> PlaybackOut:
+    """Ask for a copy of this recording that a browser can decode.
+
+    These cameras send H.265 and a recording is a stream copy, so the archive
+    holds bytes no browser on an operator's machine can play. Rather than
+    re-encode the estate on the chance somebody opens it, or replace the
+    original and lose what the camera actually sent, a second copy is made the
+    first time anyone asks to watch.
+
+    Open to anyone who may already watch the recording, viewers and demo
+    accounts included: refusing here would leave an H.265 camera simply
+    unwatchable for them, which is the whole problem this removes.
+
+    The answer is immediate; the encode is not. "converting" means the agent
+    has taken it, and the dashboard asks for the links again until the copy
+    shows up. The work happens in the agent because that is where the card is.
+    """
+    rows = await db.execute(
+        select(StorageObject).where(
+            StorageObject.recording_id == recording.id,
+            StorageObject.deleted_at.is_(None),
+            StorageObject.source_kind.is_not(None),
+        )
+    )
+    objects = list(rows.scalars().all())
+    if any(obj.s3_key.rsplit("/", 1)[-1] == PLAYBACK_FILE for obj in objects):
+        return PlaybackOut(state="ready")
+    if not objects:
+        return PlaybackOut(
+            state="unavailable", detail="This recording has no stored video to convert."
+        )
+
+    # A CommandError from here surfaces as a 503 in its own words; see main.py.
+    answer = await command_bus().call("recording.make_playable", {"recording_id": recording.id})
+    return PlaybackOut(
+        state=str(answer.get("state") or "converting"),
+        detail=str(answer.get("detail") or ""),
+    )
 
 
 #: States where the agent still owns the recording. Deleting one of these would

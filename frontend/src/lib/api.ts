@@ -8,7 +8,7 @@
 
 import type {
   Admission, Camera, CameraPage, CameraStats, Comparison, ConnectResponse, DownloadLink, Gate, Health, ImportResult, Me,
-  Preview, Profile, Recording, RecordingPage, RecordingState, ReachMode, ResetLink, SourceKind,
+  Playback, Preview, Profile, Recording, RecordingPage, RecordingState, ReachMode, ResetLink, SourceKind,
   SshAuth, StorageUsage, Team,
   User, VpnKind,
 } from "./types";
@@ -166,6 +166,10 @@ export const api = {
   estimate: (camera_ids: string[], seconds: number) =>
     request<Admission>("/api/recordings/estimate", { method: "POST", ...json({ camera_ids, seconds }) }),
   downloads: (id: string) => request<DownloadLink[]>(`/api/recordings/${id}/downloads`),
+  /** Ask for a copy this browser can decode. Answers at once; the encode does
+   *  not, so the caller asks for the links again until the copy appears. */
+  makePlayable: (id: string) =>
+    request<Playback>(`/api/recordings/${id}/playable`, { method: "POST" }),
   comparison: (id: string) => request<Comparison>(`/api/recordings/${id}/comparison`),
 
   // storage + admin
