@@ -191,6 +191,61 @@ def publish_argv(
     return argv
 
 
+#: The browser-playable copy of a recording, beside the original. The original
+#: keeps the camera's own bytes; this one exists only so a browser can decode it.
+PLAYBACK_FILE = "session-h264.mp4"
+
+
+def playback_argv(src: Path | str, dst: Path | str, accel: Accel) -> list[str]:
+    """Re-encode a finished recording into something every browser can decode.
+
+    Deliberately not the preview encoder. That one is tuned for a live monitor
+    view -- baseline profile, no B-frames, a keyframe every second, audio
+    discarded -- because a viewer joining an established stream halfway through
+    matters more than the size of anything. This is the opposite errand. The
+    file is watched from its beginning, it is stored rather than thrown away a
+    second later, and it is a copy somebody may download. So it keeps the audio,
+    spends a slower preset on a smaller file, and puts the index at the front so
+    playback starts without fetching the whole thing first.
+
+    The pixel format is forced: these cameras send full-range ``yuvj420p``,
+    which some decoders render with visibly wrong levels.
+    """
+    argv = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "warning", "-y"]
+    if accel is Accel.NVIDIA:
+        # Decode on the card as well as encode, so the frames never cross the
+        # bus. The source here is usually HEVC, which is the expensive half.
+        argv += ["-hwaccel", "cuda"]
+    argv += ["-i", str(src)]
+    if accel is Accel.NVIDIA:
+        argv += [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-profile:v",
+            "high",
+            "-rc",
+            "vbr",
+            "-cq",
+            "23",
+        ]
+    else:
+        argv += ["-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-crf", "23"]
+    argv += [
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96k",
+        "-movflags",
+        "+faststart",
+        str(dst),
+    ]
+    return argv
+
+
 def _transcode_argv(accel: Accel) -> list[str]:
     """Re-encode to what every browser can decode, as cheaply as it can be done.
 

@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.agent.commands import ConnectionCommands
+from app.agent.playback import PlaybackRenditions
 from app.agent.sink import DbSink, payload_for
 from app.config import settings
 from app.db import sessionmaker
@@ -193,6 +194,13 @@ class Agent:
             sessions=self._sessions,
             status=self.status,
             previews=self.previews,
+            # The same budget the previews use: both encode on the one card,
+            # and a conversion that ignored the live views would starve them.
+            playback=PlaybackRenditions(
+                sessions=self._sessions,
+                budget=getattr(self.previews, "budget", None),
+                store=self.store,
+            ),
         ).handle
         while not self._stopping.is_set():
             try:

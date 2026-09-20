@@ -15,6 +15,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from app.agent.playback import PlaybackRenditions
 from app.enums import SourceKind
 from app.models import Camera, CameraSource, ConnectionProfile
 from app.services.connections import ConnectionService
@@ -47,11 +48,13 @@ class ConnectionCommands:
         sessions: async_sessionmaker[AsyncSession],
         status: Callable[[], dict[str, Any]] | None = None,
         previews: PreviewManager | None = None,
+        playback: PlaybackRenditions | None = None,
     ) -> None:
         self.connections = connections
         self._sessions = sessions
         self._status = status or (lambda: {})
         self.previews = previews
+        self.playback = playback
 
     async def handle(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         if name == "agent.ping":
@@ -64,6 +67,7 @@ class ConnectionCommands:
             "preview.start": self._preview_start,
             "preview.stop": self._preview_stop,
             "preview.list": self._preview_list,
+            "recording.make_playable": self._make_playable,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -71,6 +75,16 @@ class ConnectionCommands:
         return await handler(payload)
 
     # ---- handlers ------------------------------------------------------
+
+    async def _make_playable(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Start a browser-playable copy of a recording, and answer at once.
+
+        The encode outlives this reply on purpose: the command bus waits
+        seconds and re-encoding a recording takes longer than that.
+        """
+        if self.playback is None:
+            raise UnknownCommand("recording.make_playable")
+        return await self.playback.request(str(payload.get("recording_id") or ""))
 
     async def _connect(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self._sessions() as db:

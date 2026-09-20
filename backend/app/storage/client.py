@@ -145,6 +145,22 @@ class ObjectStore:
         log.info("storage.put", key=key, bytes=size)
         return StoredObject(key=key, bytes=size, content_type=content_type)
 
+    async def get_file(self, key: str, path: Path | str) -> int:
+        """Fetch one object to a local path. Returns its size.
+
+        Used to bring a recording back for re-encoding. boto3 handles the
+        retries and the multipart split, which is why this goes through the
+        client rather than reading a presigned URL over plain HTTP.
+        """
+        path = Path(path)
+        try:
+            await asyncio.to_thread(self._client.download_file, self.bucket, key, str(path))
+        except (ClientError, BotoCoreError, Boto3Error) as exc:
+            raise StorageError(f"could not fetch {key}: {exc}") from exc
+        size = path.stat().st_size
+        log.info("storage.get", key=key, bytes=size)
+        return size
+
     async def delete(self, keys: list[str]) -> int:
         """Delete up to 1000 keys. Returns how many the gateway confirmed."""
         if not keys:
