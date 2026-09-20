@@ -346,6 +346,14 @@ async def downloads(
         )
         try:
             url = await store.presign(obj.s3_key, expires=DOWNLOAD_TTL, filename=filename)
+            # A second signature over the same object, without the attachment
+            # disposition. That header is what makes a download a download, and
+            # it is also what stops a <video> element playing the file in place.
+            # Signing is local arithmetic, not a round trip, so the spare
+            # signature costs nothing worth saving.
+            play_url = (
+                await store.presign(obj.s3_key, expires=DOWNLOAD_TTL) if obj.source_kind else ""
+            )
         except StorageError as exc:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, exc.user_message) from exc
         links.append(
@@ -354,6 +362,7 @@ async def downloads(
                 filename=filename,
                 bytes=obj.bytes,
                 url=url,
+                play_url=play_url,
                 expires_in=DOWNLOAD_TTL,
             )
         )

@@ -500,6 +500,10 @@ class DownloadLink(BaseModel):
     filename: str
     bytes: int
     url: str
+    #: The same object signed without the attachment disposition, so a <video>
+    #: can play it where ``url`` would make the browser save it instead. Empty
+    #: for the sidecar, which is not video.
+    play_url: str = ""
     expires_in: int
 
 
