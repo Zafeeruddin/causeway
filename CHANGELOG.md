@@ -14,7 +14,7 @@ no migrations.
 
 Everything needed to put an instance on the public internet with a login you are
 willing to print. Nothing here is demo-specific plumbing: the limits, the reset
-path and the read-only tier are product, and the first customer gets them too.
+path and the read-only tier are product.
 
 ### Added
 
@@ -62,7 +62,7 @@ It is stateless: signed with the app secret and carrying a keyed fingerprint of
 the password hash it was issued against. That was a constraint rather than a
 preference — a `password_resets` table needs a migration, and this schema has
 none yet (ROADMAP entry 10), so a stored token would have been a feature that
-could not be deployed to the customer already running. It pays for itself twice
+could not be deployed to an instance already running. It pays for itself twice
 anyway: redemption replaces the hash, so the link stops working without anything
 marking it used, and any other password change invalidates every link
 outstanding. Issuing a link changes nothing, so an administrator cannot lock
@@ -73,7 +73,7 @@ somebody out by pressing the button.
 ## [0.2.0] — 2026-08-30
 
 First production deployment. Everything below was found or built while getting
-one customer live, which is why so much of it is about failures explaining
+it live, which is why so much of it is about failures explaining
 themselves rather than about features.
 
 ### Added
