@@ -3,7 +3,7 @@
 A reset link is normally a row in a table: issue it, store the hash, mark it
 used. That table would need a migration, and this schema has none yet
 (ROADMAP entry 10), so a reset would be a feature you cannot deploy to the
-customer already running.
+instance already running.
 
 So the token carries what a row would have held. It is signed with the app
 secret and contains three things: who it is for, when it stops working, and a
