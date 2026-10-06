@@ -186,7 +186,7 @@ deploy/         Dockerfiles, production compose, runbooks
 
 ## Status
 
-**0.3.0 — running in production for its first customer.**
+**0.3.0.**
 
 Still `0.x` on purpose: the schema has no migrations yet
 ([ROADMAP entry 10](ROADMAP.md)), so a release can still require a rebuild
