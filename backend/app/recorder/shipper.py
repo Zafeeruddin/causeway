@@ -25,7 +25,14 @@ import structlog
 
 from app.enums import SourceKind
 from app.net.runner import LocalRunner, Runner
-from app.recorder.ffmpeg import CONCAT_LIST, SESSION_FILE, concat_argv, concat_list
+from app.recorder.ffmpeg import (
+    CONCAT_LIST,
+    HVC1,
+    SESSION_FILE,
+    concat_argv,
+    concat_list,
+    probe_codec_argv,
+)
 from app.recorder.session import CaptureReport, SessionReport
 from app.storage.client import ObjectStore, StorageError, object_store
 from app.storage.keys import content_type_for, sidecar_key, source_key
@@ -37,6 +44,32 @@ GAPS_FILE = "gaps.json"
 #: Joining a few hundred sealed segments is a stream copy, but a slow work
 #: volume can still make it take a while.
 CONCAT_TIMEOUT = 600.0
+
+#: Reading one segment's header. Generous; it is a local file.
+PROBE_TIMEOUT = 20.0
+
+
+async def video_tag_for(runner: Runner, sample: Path | str) -> str:
+    """The MP4 tag this footage needs, read from one segment of it.
+
+    Only HEVC has anything to say here. ffmpeg's default of ``hev1`` produces a
+    correct file that VLC plays and that Safari, QuickTime and every iOS device
+    refuse without explanation; ``hvc1`` is the same stream under the name they
+    accept. H.264 is already labelled the way everything expects.
+
+    A probe that fails returns nothing, leaving ffmpeg's default. That is what
+    happened before this existed, so a broken probe costs the tag and not the
+    recording.
+    """
+    try:
+        result = await runner.run(probe_codec_argv(sample), timeout=PROBE_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - never the reason a recording fails
+        log.info("ship.probe_error", error=str(exc))
+        return ""
+    if not result.ok:
+        return ""
+    lines = (result.stdout or "").strip().splitlines()
+    return HVC1 if lines and lines[0].strip().lower() == "hevc" else ""
 
 
 @dataclass(slots=True)
@@ -227,7 +260,8 @@ async def _join(capture: CaptureReport, runner: Runner) -> Path:
         list_file.write_text, concat_list([segment.path for segment in ordered])
     )
 
-    result = await runner.run(concat_argv(list_file, output), timeout=CONCAT_TIMEOUT)
+    tag = await video_tag_for(runner, ordered[0].path) if ordered else ""
+    result = await runner.run(concat_argv(list_file, output, video_tag=tag), timeout=CONCAT_TIMEOUT)
     exists = await asyncio.to_thread(output.exists)
     if not result.ok or not exists:
         raise RuntimeError(
@@ -252,7 +286,8 @@ async def _rejoin(source_dir: Path, runner: Runner) -> Path:
     output = source_dir / SESSION_FILE
     await asyncio.to_thread(list_file.write_text, concat_list(found))
 
-    result = await runner.run(concat_argv(list_file, output), timeout=CONCAT_TIMEOUT)
+    tag = await video_tag_for(runner, found[0])
+    result = await runner.run(concat_argv(list_file, output, video_tag=tag), timeout=CONCAT_TIMEOUT)
     exists = await asyncio.to_thread(output.exists)
     if not result.ok or not exists:
         raise RuntimeError(

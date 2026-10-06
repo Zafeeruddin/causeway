@@ -30,7 +30,7 @@ from app.config import settings
 from app.models import Recording, StorageObject
 from app.net.runner import LocalRunner, Runner
 from app.recorder.accel import TranscodeBudget
-from app.recorder.ffmpeg import PLAYBACK_FILE, playback_argv
+from app.recorder.ffmpeg import PLAYBACK_FILE, needs_transcode, playback_argv, probe_codec_argv
 from app.services.events import Event, EventBus, event_bus
 from app.storage.client import ObjectStore, StorageError, object_store
 
@@ -39,6 +39,11 @@ log = structlog.get_logger(__name__)
 #: Re-encoding an eight minute 1080p recording is seconds on a card and minutes
 #: on a CPU. This is the ceiling for either.
 CONVERT_TIMEOUT = 1800.0
+
+#: Reading one header over HTTPS. The file is faststart, so this is a range
+#: request for the front of it rather than a download.
+PROBE_TIMEOUT = 30.0
+PROBE_TTL = 600
 
 
 def playback_key_for(original_key: str) -> str:
@@ -80,11 +85,17 @@ class PlaybackRenditions:
             self._store = object_store()
         return self._store
 
-    async def request(self, recording_id: str) -> dict:
+    async def request(self, recording_id: str, *, force: bool = False) -> dict:
         """Start a conversion if one is needed, and say where it stands.
 
         Returns at once either way. The conversion outlives this call, because
         the command bus answers in seconds and an encode does not.
+
+        ``force`` separates the two callers. A recording that has just finished
+        asks without it, and an H.264 camera is then left alone rather than
+        re-encoded into the same thing it already was. Somebody pressing the
+        button in the dashboard asks with it, because their browser has already
+        refused the file and "nothing to do here" would be a dead end.
         """
         async with self._sessions() as db:
             original, existing = await self._objects(db, recording_id)
@@ -92,9 +103,15 @@ class PlaybackRenditions:
                 return {"state": "unavailable", "detail": "this recording has no stored video."}
             if existing is not None:
                 return {"state": "ready"}
+            key = original.s3_key
 
         if recording_id in self._running:
             return {"state": "converting"}
+
+        # Asked before the download, so a recording that needs nothing costs one
+        # header read rather than fetching and re-encoding itself into a copy.
+        if not force and not await self._needs_conversion(key):
+            return {"state": "ready"}
 
         task = asyncio.create_task(self._convert(recording_id))
         self._running[recording_id] = task
@@ -102,6 +119,24 @@ class PlaybackRenditions:
         return {"state": "converting"}
 
     # ---- internals -----------------------------------------------------
+
+    async def _needs_conversion(self, key: str) -> bool:
+        """Whether a browser would refuse this recording as it stands.
+
+        A probe that cannot answer says no, which matches how the rest of the
+        product treats an unknown codec: an unprobed source is copied rather
+        than re-encoded on a guess. The dashboard's button passes ``force`` and
+        so never reaches here, which is what keeps that conservative default
+        from becoming a dead end for the person who actually cannot watch.
+        """
+        try:
+            url = await self.store.presign(key, expires=PROBE_TTL)
+            result = await self._runner.run(probe_codec_argv(url), timeout=PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - an unreadable header is not a failure
+            log.info("playback.probe_error", key=key, error=str(exc))
+            return False
+        lines = (result.stdout or "").strip().splitlines()
+        return needs_transcode(lines[0].strip().lower() if lines else "")
 
     async def _objects(
         self, db: AsyncSession, recording_id: str

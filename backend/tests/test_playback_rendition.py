@@ -7,9 +7,13 @@ request, beside the original, which is never touched.
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent.playback import is_playback_key, playback_key_for
+from app.net.runner import ProcResult
 from app.recorder.accel import Accel
-from app.recorder.ffmpeg import PLAYBACK_FILE, playback_argv
+from app.recorder.ffmpeg import HVC1, PLAYBACK_FILE, concat_argv, playback_argv
+from app.recorder.shipper import video_tag_for
 
 
 def test_the_copy_sits_beside_the_original():
@@ -61,3 +65,52 @@ def test_full_range_pixels_are_normalised():
     levels, which looks like a washed-out camera rather than a format quirk."""
     argv = playback_argv("in.mp4", "out.mp4", Accel.NVIDIA)
     assert argv[argv.index("-pix_fmt") + 1] == "yuv420p"
+
+
+# ---- the container tag -------------------------------------------------
+
+
+class Probe:
+    """An ffprobe that says what the test wants it to say."""
+
+    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+        self._stdout = stdout
+        self._returncode = returncode
+
+    def wrap(self, argv):
+        return list(argv)
+
+    async def run(self, argv, **_):
+        return ProcResult(self._returncode, self._stdout, "")
+
+    async def spawn(self, argv, **_):
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_hevc_is_relabelled_so_apple_devices_will_play_it():
+    """ffmpeg's default hev1 produces a correct file that VLC plays and that
+    Safari, QuickTime and every iPhone refuse without saying why."""
+    assert await video_tag_for(Probe("hevc\n"), "run-000/seg-00000.ts") == HVC1
+
+
+@pytest.mark.asyncio
+async def test_h264_keeps_the_tag_it_already_had():
+    """avc1 is what everything expects. Forcing hvc1 here would mislabel a
+    stream that was never the problem."""
+    assert await video_tag_for(Probe("h264\n"), "run-000/seg-00000.ts") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_failed_probe_costs_the_tag_and_not_the_recording():
+    """Whatever stopped the probe must not stop the shipping. Without a tag the
+    file is exactly what it used to be, which is no worse than before."""
+    assert await video_tag_for(Probe("", returncode=1), "run-000/seg-00000.ts") == ""
+
+
+def test_the_tag_is_applied_only_when_asked_for():
+    assert "-tag:v" not in concat_argv("list.txt", "out.mp4")
+    argv = concat_argv("list.txt", "out.mp4", video_tag=HVC1)
+    assert argv[argv.index("-tag:v") + 1] == HVC1
+    # Still a stream copy: relabelling is not re-encoding.
+    assert argv[argv.index("-c") + 1] == "copy"

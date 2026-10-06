@@ -221,8 +221,11 @@ def playback_argv(src: Path | str, dst: Path | str, accel: Accel) -> list[str]:
         argv += [
             "-c:v",
             "h264_nvenc",
+            # p2 rather than p4: the wait is what makes this feature tolerable,
+            # and the difference in the picture is not visible on a camera feed
+            # while the difference in time is minutes on a long recording.
             "-preset",
-            "p4",
+            "p2",
             "-profile:v",
             "high",
             "-rc",
@@ -299,9 +302,38 @@ def _transcode_argv(accel: Accel) -> list[str]:
     ]
 
 
-def concat_argv(list_file: Path | str, output: Path | str) -> list[str]:
-    """Join sealed segments into one MP4 without re-encoding video."""
+#: The tag Safari and QuickTime will accept for HEVC in MP4. ffmpeg writes
+#: ``hev1`` by default when stream-copying, and Safari silently refuses that --
+#: same bytes, same codec, four characters between playing and not.
+HVC1 = "hvc1"
+
+
+def probe_codec_argv(path: Path | str) -> list[str]:
+    """Ask what codec a file holds. Reads the header, not the file."""
     return [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+
+
+def concat_argv(list_file: Path | str, output: Path | str, *, video_tag: str = "") -> list[str]:
+    """Join sealed segments into one MP4 without re-encoding video.
+
+    ``video_tag`` relabels the video stream without touching it. HEVC needs
+    ``hvc1`` to play in Safari and on iOS; left at ffmpeg's default of ``hev1``
+    the file is correct, plays in VLC, and is refused by every Apple decoder.
+    It is not set blindly: forcing it onto H.264 would mislabel a stream that
+    was already fine.
+    """
+    argv = [
         "ffmpeg",
         "-hide_banner",
         "-nostdin",
@@ -318,11 +350,11 @@ def concat_argv(list_file: Path | str, output: Path | str) -> list[str]:
         # AAC arrives from mpegts in ADTS framing, which MP4 cannot hold.
         "-bsf:a",
         "aac_adtstoasc",
-        "-movflags",
-        "+faststart",
-        "-y",
-        str(output),
     ]
+    if video_tag:
+        argv += ["-tag:v", video_tag]
+    argv += ["-movflags", "+faststart", "-y", str(output)]
+    return argv
 
 
 def concat_list(segments: list[Path | str]) -> str:

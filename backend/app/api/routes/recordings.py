@@ -421,7 +421,11 @@ async def make_playable(
         )
 
     # A CommandError from here surfaces as a 503 in its own words; see main.py.
-    answer = await command_bus().call("recording.make_playable", {"recording_id": recording.id})
+    # force: this caller's browser has already refused the file, so "nothing to
+    # convert here" would be a dead end rather than an answer.
+    answer = await command_bus().call(
+        "recording.make_playable", {"recording_id": recording.id, "force": True}
+    )
     return PlaybackOut(
         state=str(answer.get("state") or "converting"),
         detail=str(answer.get("detail") or ""),

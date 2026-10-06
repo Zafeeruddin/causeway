@@ -194,13 +194,7 @@ class Agent:
             sessions=self._sessions,
             status=self.status,
             previews=self.previews,
-            # The same budget the previews use: both encode on the one card,
-            # and a conversion that ignored the live views would starve them.
-            playback=PlaybackRenditions(
-                sessions=self._sessions,
-                budget=getattr(self.previews, "budget", None),
-                store=self.store,
-            ),
+            playback=self.playback,
         ).handle
         while not self._stopping.is_set():
             try:
@@ -401,6 +395,22 @@ class Agent:
                 paths=paths,
             )
 
+    @property
+    def playback(self) -> PlaybackRenditions:
+        """Browser-playable copies, shared by the command handler and finalize.
+
+        On the same budget as the previews: both encode on the one card, and a
+        conversion that ignored the live views would starve them.
+        """
+        existing = getattr(self, "_playback", None)
+        if existing is None:
+            existing = self._playback = PlaybackRenditions(
+                sessions=self._sessions,
+                budget=getattr(self.previews, "budget", None),
+                store=self.store,
+            )
+        return existing
+
     async def finalize(
         self,
         recording_id: str,
@@ -452,6 +462,15 @@ class Agent:
             gaps=report.gap_seconds,
             bytes=shipped.bytes,
         )
+        # Start the browser-playable copy now rather than when somebody presses
+        # Play. Waiting minutes for an encode after asking to watch is the
+        # difference between a feature and an apology, and the card is idle
+        # between recordings. Without `force` this leaves H.264 alone, so a
+        # camera that was always playable costs one header read.
+        try:
+            await self.playback.request(recording_id)
+        except Exception as exc:  # noqa: BLE001 - the recording is complete either way
+            log.info("playback.request_failed", recording=recording_id, error=str(exc))
 
     async def _record_objects(
         self, recording_id: str, plan: _Plan, report: SessionReport, shipped: ShipResult

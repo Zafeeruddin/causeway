@@ -84,7 +84,9 @@ class ConnectionCommands:
         """
         if self.playback is None:
             raise UnknownCommand("recording.make_playable")
-        return await self.playback.request(str(payload.get("recording_id") or ""))
+        return await self.playback.request(
+            str(payload.get("recording_id") or ""), force=bool(payload.get("force"))
+        )
 
     async def _connect(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self._sessions() as db:
