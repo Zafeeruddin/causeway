@@ -12,6 +12,7 @@ Watch them live, record them, and know which hop failed when one does.
 [![tests](https://img.shields.io/badge/tests-298%20passing-4c9a6a)](backend/tests)
 [![python](https://img.shields.io/badge/python-3.12-3776ab)](backend/pyproject.toml)
 [![next](https://img.shields.io/badge/next.js-16-black)](frontend/package.json)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 </div>
 
@@ -193,5 +194,4 @@ rather than an upgrade. `1.0.0` is the version that promises otherwise.
 
 ## License
 
-Not yet licensed for redistribution. An open-source license is planned; until
-one is added here, all rights are reserved.
+Apache License 2.0. See [LICENSE](LICENSE).

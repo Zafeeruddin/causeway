@@ -39,7 +39,7 @@
   <g class="f">
     <text x="28" y="36" fill="#1879a8" font-size="11" font-weight="700" letter-spacing="2.4">CAUSEWAY</text>
     <text x="28" y="58" fill="#172b36" font-size="17" font-weight="600">Gate 1 – North</text>
-    <text x="28" y="78" fill="#6b7f8a" font-size="12">ZAIN EPM · VPN + jump host · 10.20.30.42</text>
+    <text x="28" y="78" fill="#6b7f8a" font-size="12">Acme Logistics · VPN + jump host · 10.20.30.42</text>
   </g>
   <g class="video step9">
     <circle cx="836" cy="34" r="4" fill="#208754" class="livedot"/>
